@@ -15,6 +15,7 @@ public class TeleportMod : ModSystem
 
     private double homeCooldownSeconds;
     private double backCooldownSeconds;
+    private bool singleMode; // true = only one home allowed ("default")
 
     private const string ConfigFileName = "MHT_config.json";
     private const string SaveFileName = "MHT_playerHomes.json";
@@ -38,17 +39,20 @@ public class TeleportMod : ModSystem
         LoadPreviousPositions();
 
         var commands = api.ChatCommands;
+        var parsers = commands.Parsers;
 
         commands.Create("sethome")
             .WithDescription("Sets a home location. Usage: /sethome [name]")
             .RequiresPrivilege(Privilege.chat)
             .RequiresPlayer()
+            .WithArgs(parsers.OptionalWord("name"))
             .HandleWith(SetHomeCommand);
 
         commands.Create("home")
             .WithDescription($"Teleports you to a home. Usage: /home [name] (Cooldown: {homeCooldownSeconds / 60} min)")
             .RequiresPrivilege(Privilege.chat)
             .RequiresPlayer()
+            .WithArgs(parsers.OptionalWord("name"))
             .HandleWith(HomeCommand);
 
         commands.Create("back")
@@ -67,6 +71,7 @@ public class TeleportMod : ModSystem
             .WithDescription("Deletes a saved home. Usage: /delhome <name>")
             .RequiresPrivilege(Privilege.chat)
             .RequiresPlayer()
+            .WithArgs(parsers.Word("name"))
             .HandleWith(DeleteHomeCommand);
 
         commands.Create("homeinfo")
@@ -74,12 +79,19 @@ public class TeleportMod : ModSystem
             .RequiresPrivilege(Privilege.chat)
             .RequiresPlayer()
             .HandleWith(HomeInfoCommand);
+
+        commands.Create("renamehome")
+            .WithDescription("Renames a saved home. Usage: /renamehome <oldName> <newName>")
+            .RequiresPrivilege(Privilege.chat)
+            .RequiresPlayer()
+            .WithArgs(parsers.Word("oldName"), parsers.Word("newName"))
+            .HandleWith(RenameHomeCommand);
     }
 
     private string GetHomeName(TextCommandCallingArgs args)
     {
-        string raw = args.RawArgs?.ToString() ?? "";
-        return !string.IsNullOrWhiteSpace(raw) ? raw.Trim().Split(' ')[0] : "default";
+        if (singleMode) return "default";
+        return (args.ArgCount >= 1 && args[0] is string s && !string.IsNullOrEmpty(s)) ? s : "default";
     }
 
     private TextCommandResult SetHomeCommand(TextCommandCallingArgs args)
@@ -88,6 +100,8 @@ public class TeleportMod : ModSystem
         if (player == null) return TextCommandResult.Error("This command can only be used by a player.");
 
         string homeName = GetHomeName(args);
+        if (singleMode && homeName != "default")
+            return TextCommandResult.Error("Single mode: only one home allowed. Use /sethome without a name.");
 
         if (!playerHomes.TryGetValue(player.PlayerUID, out var homes))
         {
@@ -108,6 +122,9 @@ public class TeleportMod : ModSystem
         if (player == null) return TextCommandResult.Error("This command can only be used by a player.");
 
         string homeName = GetHomeName(args);
+        if (singleMode && homeName != "default")
+            return TextCommandResult.Error("Single mode: only 'default' home can be used.");
+
         DateTime currentTime = DateTime.UtcNow;
 
         if (lastHomeUse.TryGetValue(player.PlayerUID, out DateTime lastUsedTime))
@@ -118,11 +135,9 @@ public class TeleportMod : ModSystem
                 double remainingTime = homeCooldownSeconds - timeSinceLastUse;
                 double remainingMinutes = Math.Floor(remainingTime / 60);
                 double remainingSeconds = remainingTime % 60;
-
                 string timeMessage = remainingMinutes > 0
                     ? $"{remainingMinutes} min {Math.Ceiling(remainingSeconds)} sec"
                     : $"{Math.Ceiling(remainingSeconds)} sec";
-
                 return TextCommandResult.Error($"You must wait {timeMessage} before using /home again.");
             }
         }
@@ -131,7 +146,6 @@ public class TeleportMod : ModSystem
         {
             previousPositions[player.PlayerUID] = player.Entity.Pos.XYZ;
             SavePreviousPositions();
-
             lastHomeUse[player.PlayerUID] = currentTime;
             player.Entity.TeleportTo(homePos);
             LogAction($"{player.PlayerName} teleported to home '{homeName}' at {homePos}");
@@ -139,10 +153,7 @@ public class TeleportMod : ModSystem
                 $"Teleported to home '{homeName}'! Cooldown: {homeCooldownSeconds / 60} min", EnumChatType.CommandSuccess);
             return TextCommandResult.Success();
         }
-        else
-        {
-            return TextCommandResult.Error($"No home set with name '{homeName}'. Use /sethome {homeName} first!");
-        }
+        return TextCommandResult.Error($"No home set with name '{homeName}'.");
     }
 
     private TextCommandResult BackCommand(TextCommandCallingArgs args)
@@ -160,11 +171,9 @@ public class TeleportMod : ModSystem
                 double remainingTime = backCooldownSeconds - timeSinceLastUse;
                 double remainingMinutes = Math.Floor(remainingTime / 60);
                 double remainingSeconds = remainingTime % 60;
-
                 string timeMessage = remainingMinutes > 0
                     ? $"{remainingMinutes} min {Math.Ceiling(remainingSeconds)} sec"
                     : $"{Math.Ceiling(remainingSeconds)} sec";
-
                 return TextCommandResult.Error($"You must wait {timeMessage} before using /back again.");
             }
         }
@@ -178,10 +187,7 @@ public class TeleportMod : ModSystem
                 $"Teleported back! Cooldown: {backCooldownSeconds / 60} min", EnumChatType.CommandSuccess);
             return TextCommandResult.Success();
         }
-        else
-        {
-            return TextCommandResult.Error("No previous position found. Use /home first to create a return point!");
-        }
+        return TextCommandResult.Error("No previous position found.");
     }
 
     private TextCommandResult ListHomesCommand(TextCommandCallingArgs args)
@@ -190,14 +196,8 @@ public class TeleportMod : ModSystem
         if (player == null) return TextCommandResult.Error("This command can only be used by a player.");
 
         if (playerHomes.TryGetValue(player.PlayerUID, out var homes) && homes.Count > 0)
-        {
-            string homeList = string.Join(", ", homes.Keys);
-            return TextCommandResult.Success($"Your saved homes: {homeList}");
-        }
-        else
-        {
-            return TextCommandResult.Success("You have no saved homes. Use /sethome [name] to set one.");
-        }
+            return TextCommandResult.Success($"Your saved homes: {string.Join(", ", homes.Keys)}");
+        return TextCommandResult.Success("You have no saved homes.");
     }
 
     private TextCommandResult DeleteHomeCommand(TextCommandCallingArgs args)
@@ -205,23 +205,19 @@ public class TeleportMod : ModSystem
         var player = args.Caller.Player as IServerPlayer;
         if (player == null) return TextCommandResult.Error("This command can only be used by a player.");
 
-        string raw = args.RawArgs?.ToString() ?? "";
-        if (string.IsNullOrWhiteSpace(raw)) return TextCommandResult.Error("Usage: /delhome <name>");
-
-        string homeName = raw.Trim().Split(' ')[0];
+        string homeName = (args.ArgCount >= 1 && args[0] is string s) ? s : null;
+        if (string.IsNullOrEmpty(homeName)) return TextCommandResult.Error("Usage: /delhome <name>");
+        if (singleMode && homeName != "default")
+            return TextCommandResult.Error("Single mode: only 'default' home can be deleted.");
 
         if (playerHomes.TryGetValue(player.PlayerUID, out var homes) && homes.Remove(homeName))
         {
             if (homes.Count == 0) playerHomes.Remove(player.PlayerUID);
-
             SaveHomes();
             LogAction($"{player.PlayerName} deleted home '{homeName}'");
-            return TextCommandResult.Success($"Home '{homeName}' has been deleted.");
+            return TextCommandResult.Success($"Home '{homeName}' deleted.");
         }
-        else
-        {
-            return TextCommandResult.Error($"No home found with the name '{homeName}'.");
-        }
+        return TextCommandResult.Error($"No home found with the name '{homeName}'.");
     }
 
     private TextCommandResult HomeInfoCommand(TextCommandCallingArgs args)
@@ -239,10 +235,30 @@ public class TeleportMod : ModSystem
             }
             return TextCommandResult.Success(string.Join("\n", lines));
         }
-        else
-        {
-            return TextCommandResult.Success("You have no saved homes. Use /sethome [name] to set one.");
-        }
+        return TextCommandResult.Success("You have no saved homes.");
+    }
+
+    private TextCommandResult RenameHomeCommand(TextCommandCallingArgs args)
+    {
+        var player = args.Caller.Player as IServerPlayer;
+        if (player == null) return TextCommandResult.Error("This command can only be used by a player.");
+        if (singleMode) return TextCommandResult.Error("Single mode: renaming is disabled.");
+
+        if (args.ArgCount < 2 || !(args[0] is string oldName) || !(args[1] is string newName))
+            return TextCommandResult.Error("Usage: /renamehome <oldName> <newName>");
+        if (string.Equals(oldName, newName, StringComparison.Ordinal))
+            return TextCommandResult.Error("Old and new names are the same.");
+        if (!playerHomes.TryGetValue(player.PlayerUID, out var homes) || !homes.ContainsKey(oldName))
+            return TextCommandResult.Error($"No home found with name '{oldName}'.");
+        if (homes.ContainsKey(newName))
+            return TextCommandResult.Error($"Home '{newName}' already exists.");
+
+        var pos = homes[oldName];
+        homes.Remove(oldName);
+        homes[newName] = pos;
+        SaveHomes();
+        LogAction($"{player.PlayerName} renamed home '{oldName}' to '{newName}'");
+        return TextCommandResult.Success($"Home '{oldName}' renamed to '{newName}'.");
     }
 
     private void LoadConfig()
@@ -255,16 +271,15 @@ public class TeleportMod : ModSystem
                 var config = JsonUtil.FromString<TeleportConfig>(json);
                 homeCooldownSeconds = config?.HomeCooldownSeconds ?? 300;
                 backCooldownSeconds = config?.BackCooldownSeconds ?? 300;
+                singleMode = string.Equals(config?.TeleportMode, "single", StringComparison.OrdinalIgnoreCase);
                 return;
             }
         }
-        catch
-        {
-            System.Console.WriteLine("Error loading config, using default values.");
-        }
+        catch { System.Console.WriteLine("Error loading config, using default values."); }
 
         homeCooldownSeconds = 300;
         backCooldownSeconds = 300;
+        singleMode = false;
         SaveConfig();
     }
 
@@ -272,30 +287,18 @@ public class TeleportMod : ModSystem
     {
         var config = new TeleportConfig
         {
+            TeleportMode = singleMode ? "single" : "multi",
             HomeCooldownSeconds = homeCooldownSeconds,
             BackCooldownSeconds = backCooldownSeconds
         };
-        try
-        {
-            string json = JsonUtil.ToString(config);
-            File.WriteAllText(ConfigFilePath, json);
-        }
-        catch (Exception ex)
-        {
-            System.Console.WriteLine($"Error saving config: {ex.Message}");
-        }
+        try { File.WriteAllText(ConfigFilePath, JsonUtil.ToString(config)); }
+        catch (Exception ex) { System.Console.WriteLine($"Error saving config: {ex.Message}"); }
     }
 
     private void SaveHomes()
     {
-        try
-        {
-            File.WriteAllBytes(SaveFilePath, JsonUtil.ToBytes(playerHomes));
-        }
-        catch (Exception ex)
-        {
-            System.Console.WriteLine($"Error saving homes: {ex.Message}");
-        }
+        try { File.WriteAllBytes(SaveFilePath, JsonUtil.ToBytes(playerHomes)); }
+        catch (Exception ex) { System.Console.WriteLine($"Error saving homes: {ex.Message}"); }
     }
 
     private void LoadHomes()
@@ -305,24 +308,33 @@ public class TeleportMod : ModSystem
             if (File.Exists(SaveFilePath))
             {
                 playerHomes = JsonUtil.FromBytes<Dictionary<string, Dictionary<string, Vec3d>>>(File.ReadAllBytes(SaveFilePath));
+                if (singleMode)
+                {
+                    foreach (var uid in new List<string>(playerHomes.Keys))
+                    {
+                        var homes = playerHomes[uid];
+                        if (homes == null || homes.Count <= 1) continue;
+
+                        if (homes.TryGetValue("default", out var defPos))
+                            playerHomes[uid] = new Dictionary<string, Vec3d> { ["default"] = defPos };
+                        else
+                        {
+                            Vec3d first = new Vec3d();
+                            foreach (var kv in homes) { first = kv.Value; break; }
+                            playerHomes[uid] = new Dictionary<string, Vec3d> { ["default"] = first };
+                        }
+                    }
+                    SaveHomes();
+                }
             }
         }
-        catch (Exception ex)
-        {
-            System.Console.WriteLine($"Error loading homes: {ex.Message}");
-        }
+        catch (Exception ex) { System.Console.WriteLine($"Error loading homes: {ex.Message}"); }
     }
 
     private void SavePreviousPositions()
     {
-        try
-        {
-            File.WriteAllBytes(PreviousPositionsFilePath, JsonUtil.ToBytes(previousPositions));
-        }
-        catch (Exception ex)
-        {
-            System.Console.WriteLine($"Error saving previous positions: {ex.Message}");
-        }
+        try { File.WriteAllBytes(PreviousPositionsFilePath, JsonUtil.ToBytes(previousPositions)); }
+        catch (Exception ex) { System.Console.WriteLine($"Error saving previous positions: {ex.Message}"); }
     }
 
     private void LoadPreviousPositions()
@@ -330,32 +342,21 @@ public class TeleportMod : ModSystem
         try
         {
             if (File.Exists(PreviousPositionsFilePath))
-            {
                 previousPositions = JsonUtil.FromBytes<Dictionary<string, Vec3d>>(File.ReadAllBytes(PreviousPositionsFilePath));
-            }
         }
-        catch (Exception ex)
-        {
-            System.Console.WriteLine($"Error loading previous positions: {ex.Message}");
-        }
+        catch (Exception ex) { System.Console.WriteLine($"Error loading previous positions: {ex.Message}"); }
     }
 
     private void LogAction(string message)
     {
-        try
-        {
-            string logEntry = $"{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} - {message}{Environment.NewLine}";
-            File.AppendAllText(LogFilePath, logEntry);
-        }
-        catch (Exception ex)
-        {
-            System.Console.WriteLine($"Error writing to log: {ex.Message}");
-        }
+        try { File.AppendAllText(LogFilePath, $"{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} - {message}{Environment.NewLine}"); }
+        catch (Exception ex) { System.Console.WriteLine($"Error writing to log: {ex.Message}"); }
     }
 }
 
 public class TeleportConfig
 {
+    public string TeleportMode { get; set; } = "multi"; // default is multi
     public double HomeCooldownSeconds { get; set; } = 300;
     public double BackCooldownSeconds { get; set; } = 300;
 }

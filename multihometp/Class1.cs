@@ -86,6 +86,13 @@ public class TeleportMod : ModSystem
             .RequiresPlayer()
             .WithArgs(parsers.Word("oldName"), parsers.Word("newName"))
             .HandleWith(RenameHomeCommand);
+
+        // NEW: delete all homes for the caller
+        commands.Create("delallhomes")
+            .WithDescription("Deletes all saved homes")
+            .RequiresPrivilege(Privilege.chat)
+            .RequiresPlayer()
+            .HandleWith(DeleteAllHomesCommand);
     }
 
     private string GetHomeName(TextCommandCallingArgs args)
@@ -259,6 +266,23 @@ public class TeleportMod : ModSystem
         SaveHomes();
         LogAction($"{player.PlayerName} renamed home '{oldName}' to '{newName}'");
         return TextCommandResult.Success($"Home '{oldName}' renamed to '{newName}'.");
+    }
+
+    // NEW: implementation of /delallhomes
+    private TextCommandResult DeleteAllHomesCommand(TextCommandCallingArgs args)
+    {
+        var player = args.Caller.Player as IServerPlayer;
+        if (player == null) return TextCommandResult.Error("This command can only be used by a player.");
+
+        if (playerHomes.ContainsKey(player.PlayerUID))
+        {
+            playerHomes.Remove(player.PlayerUID);
+            SaveHomes();
+            LogAction($"{player.PlayerName} deleted ALL homes");
+            return TextCommandResult.Success("All your saved homes have been deleted.");
+        }
+
+        return TextCommandResult.Error("You have no saved homes to delete.");
     }
 
     private void LoadConfig()

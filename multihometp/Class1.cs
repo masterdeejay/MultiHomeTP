@@ -8,14 +8,24 @@ using Vintagestory.API.Config;
 
 public class TeleportMod : ModSystem
 {
+    private ICoreServerAPI sapi;
+
     private Dictionary<string, Dictionary<string, Vec3d>> playerHomes = new Dictionary<string, Dictionary<string, Vec3d>>();
     private Dictionary<string, DateTime> lastHomeUse = new Dictionary<string, DateTime>();
     private Dictionary<string, DateTime> lastBackUse = new Dictionary<string, DateTime>();
     private Dictionary<string, Vec3d> previousPositions = new Dictionary<string, Vec3d>();
 
+    private Dictionary<string, DateTime> lastSpawnUse = new Dictionary<string, DateTime>();
+
     private double homeCooldownSeconds;
     private double backCooldownSeconds;
-    private bool singleMode; // true = only one home allowed ("default")
+    private double spawnCooldownSeconds;
+
+    private bool singleMode; // true = csak egy "default" home engedélyezett
+
+ 
+    private bool spawnCommandsEnabled;
+    private bool backEnabled;
 
     private const string ConfigFileName = "MHT_config.json";
     private const string SaveFileName = "MHT_playerHomes.json";
@@ -29,6 +39,8 @@ public class TeleportMod : ModSystem
 
     public override void StartServerSide(ICoreServerAPI api)
     {
+        sapi = api;
+
         ConfigFilePath = Path.Combine(api.GetOrCreateDataPath("TeleportMod"), ConfigFileName);
         SaveFilePath = Path.Combine(api.GetOrCreateDataPath("TeleportMod"), SaveFileName);
         PreviousPositionsFilePath = Path.Combine(api.GetOrCreateDataPath("TeleportMod"), PreviousPositionsFileName);
@@ -41,6 +53,7 @@ public class TeleportMod : ModSystem
         var commands = api.ChatCommands;
         var parsers = commands.Parsers;
 
+        // --- Homes ---
         commands.Create("sethome")
             .WithDescription("Sets a home location. Usage: /sethome [name]")
             .RequiresPrivilege(Privilege.chat)
@@ -55,11 +68,14 @@ public class TeleportMod : ModSystem
             .WithArgs(parsers.OptionalWord("name"))
             .HandleWith(HomeCommand);
 
-        commands.Create("back")
-            .WithDescription($"Teleports you to your last location (Cooldown: {backCooldownSeconds / 60} min)")
-            .RequiresPrivilege(Privilege.chat)
-            .RequiresPlayer()
-            .HandleWith(BackCommand);
+        if (backEnabled)
+        {
+            commands.Create("back")
+                .WithDescription($"Teleports you to your last location (Cooldown: {backCooldownSeconds / 60} min)")
+                .RequiresPrivilege(Privilege.chat)
+                .RequiresPlayer()
+                .HandleWith(BackCommand);
+        }
 
         commands.Create("listhomes")
             .WithDescription("Lists your saved home names")
@@ -86,6 +102,74 @@ public class TeleportMod : ModSystem
             .RequiresPlayer()
             .WithArgs(parsers.Word("oldName"), parsers.Word("newName"))
             .HandleWith(RenameHomeCommand);
+
+        
+        if (spawnCommandsEnabled)
+        {
+            RegisterTpToSpawnCommand("tospawn");
+            RegisterTpToSpawnCommand("tpspawn");
+            RegisterTpToSpawnCommand("tptospawn");
+        }
+    }
+
+    private void RegisterTpToSpawnCommand(string cmd)
+    {
+        string desc = spawnCooldownSeconds > 0
+            ? $"Teleport to the world's default spawn point (Cooldown: {spawnCooldownSeconds / 60} min)"
+            : "Teleport to the world's default spawn point";
+
+        sapi.ChatCommands.Create(cmd)
+            .WithDescription(desc)
+            .RequiresPrivilege(Privilege.chat)
+            .RequiresPlayer()
+            .HandleWith(TpToSpawnCommand);
+    }
+
+    private TextCommandResult TpToSpawnCommand(TextCommandCallingArgs args)
+    {
+        var player = args.Caller.Player as IServerPlayer;
+        if (player == null) return TextCommandResult.Error("This command can only be used by a player.");
+
+        
+        DateTime now = DateTime.UtcNow;
+        if (spawnCooldownSeconds > 0 && lastSpawnUse.TryGetValue(player.PlayerUID, out var last))
+        {
+            double elapsed = (now - last).TotalSeconds;
+            if (elapsed < spawnCooldownSeconds)
+            {
+                double remain = spawnCooldownSeconds - elapsed;
+                double mins = Math.Floor(remain / 60);
+                double secs = remain % 60;
+                string msg = mins > 0 ? $"{mins} min {Math.Ceiling(secs)} sec" : $"{Math.Ceiling(secs)} sec";
+                return TextCommandResult.Error($"You must wait {msg} before using this command again.");
+            }
+        }
+
+        var epos = sapi?.World?.DefaultSpawnPosition;
+        if (epos == null) return TextCommandResult.Error("World spawn is not available.");
+
+        BlockPos spawn = epos.AsBlockPos;
+
+       
+        previousPositions[player.PlayerUID] = player.Entity.Pos.XYZ;
+        SavePreviousPositions();
+
+        
+        lastSpawnUse[player.PlayerUID] = now;
+
+        // + 1 blokk magasra ez vajon maradjon?
+        double tx = spawn.X;
+        double ty = spawn.Y + 1;
+        double tz = spawn.Z;
+
+        player.Entity.TeleportToDouble(tx, ty, tz);
+
+        LogAction($"{player.PlayerName} teleported to world spawn: {spawn.X} {spawn.Y} {spawn.Z}");
+        string suffix = spawnCooldownSeconds > 0 ? $" Cooldown: {spawnCooldownSeconds / 60} min" : "";
+        player.SendMessage(GlobalConstants.GeneralChatGroup,
+            $"Teleported to world spawn", EnumChatType.CommandSuccess);
+
+        return TextCommandResult.Success();
     }
 
     private string GetHomeName(TextCommandCallingArgs args)
@@ -271,15 +355,24 @@ public class TeleportMod : ModSystem
                 var config = JsonUtil.FromString<TeleportConfig>(json);
                 homeCooldownSeconds = config?.HomeCooldownSeconds ?? 300;
                 backCooldownSeconds = config?.BackCooldownSeconds ?? 300;
+                spawnCooldownSeconds = config?.SpawnCooldownSeconds ?? 300; // alap: 300 mp
                 singleMode = string.Equals(config?.TeleportMode, "single", StringComparison.OrdinalIgnoreCase);
+
+                spawnCommandsEnabled = config?.EnableSpawnCommands ?? true;
+                backEnabled = config?.EnableBackCommand ?? true;
                 return;
             }
         }
         catch { System.Console.WriteLine("Error loading config, using default values."); }
 
+        // Alapértelmezések
         homeCooldownSeconds = 300;
         backCooldownSeconds = 300;
+        spawnCooldownSeconds = 300;
         singleMode = false;
+        spawnCommandsEnabled = true;
+        backEnabled = true;
+
         SaveConfig();
     }
 
@@ -289,7 +382,10 @@ public class TeleportMod : ModSystem
         {
             TeleportMode = singleMode ? "single" : "multi",
             HomeCooldownSeconds = homeCooldownSeconds,
-            BackCooldownSeconds = backCooldownSeconds
+            BackCooldownSeconds = backCooldownSeconds,
+            SpawnCooldownSeconds = spawnCooldownSeconds,
+            EnableSpawnCommands = spawnCommandsEnabled,
+            EnableBackCommand = backEnabled
         };
         try { File.WriteAllText(ConfigFilePath, JsonUtil.ToString(config)); }
         catch (Exception ex) { System.Console.WriteLine($"Error saving config: {ex.Message}"); }
@@ -359,4 +455,9 @@ public class TeleportConfig
     public string TeleportMode { get; set; } = "multi"; // default is multi
     public double HomeCooldownSeconds { get; set; } = 300;
     public double BackCooldownSeconds { get; set; } = 300;
+
+    public bool EnableSpawnCommands { get; set; } = true;
+    public bool EnableBackCommand { get; set; } = true;
+
+    public double SpawnCooldownSeconds { get; set; } = 300;
 }

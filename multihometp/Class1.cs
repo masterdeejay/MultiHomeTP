@@ -102,20 +102,42 @@ public class TeleportMod : ModSystem
             .RequiresPlayer()
             .WithArgs(parsers.Word("oldName"), parsers.Word("newName"))
             .HandleWith(RenameHomeCommand);
+
+        commands.Create("delallhomes")
+          .WithDescription("Deletes all saved homes")
+          .RequiresPrivilege(Privilege.chat)
+          .RequiresPlayer()
+          .HandleWith(DeleteAllHomesCommand);
+       
+        if (spawnCommandsEnabled)
+            if (spawnCommandsEnabled)
+            {
+                string desc = spawnCooldownSeconds > 0
+                    ? $"Teleport to the world's default spawn point (Cooldown: {spawnCooldownSeconds / 60} min)"
+                    : "Teleport to the world's default spawn point";
+
+                commands.Create("tospawn")
+                    .WithDescription(desc)
+                    .RequiresPrivilege(Privilege.chat)
+                    .RequiresPlayer()
+                    .HandleWith(TpToSpawnCommand);
+
+                commands.Create("tpspawn")
+                    .WithDescription(desc)
+                    .RequiresPrivilege(Privilege.chat)
+                    .RequiresPlayer()
+                    .HandleWith(TpToSpawnCommand);
+
+                commands.Create("tptospawn")
+                    .WithDescription(desc)
+                    .RequiresPrivilege(Privilege.chat)
+                    .RequiresPlayer()
+                    .HandleWith(TpToSpawnCommand);
+            }
+
     }
 
-    private void RegisterTpToSpawnCommand(string cmd)
-    {
-        string desc = spawnCooldownSeconds > 0
-            ? $"Teleport to the world's default spawn point (Cooldown: {spawnCooldownSeconds / 60} min)"
-            : "Teleport to the world's default spawn point";
 
-        sapi.ChatCommands.Create(cmd)
-            .WithDescription(desc)
-            .RequiresPrivilege(Privilege.chat)
-            .RequiresPlayer()
-            .HandleWith(TpToSpawnCommand);
-    }
 
     private TextCommandResult TpToSpawnCommand(TextCommandCallingArgs args)
     {
@@ -337,7 +359,7 @@ public class TeleportMod : ModSystem
         return TextCommandResult.Success($"Home '{oldName}' renamed to '{newName}'.");
     }
 
-    // NEW: implementation of /delallhomes
+   
     private TextCommandResult DeleteAllHomesCommand(TextCommandCallingArgs args)
     {
         var player = args.Caller.Player as IServerPlayer;

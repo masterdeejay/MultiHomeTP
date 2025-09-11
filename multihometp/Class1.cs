@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Config;
@@ -777,8 +779,28 @@ public class TeleportMod : ModSystem
             WalkSampleIntervalMs = walkSampleIntervalMs,
             WalkSaveIntervalMs = walkSaveIntervalMs
         };
-        try { File.WriteAllText(ConfigFilePath, JsonUtil.ToString(config)); }
-        catch (Exception ex) { System.Console.WriteLine($"Error saving config: {ex.Message}"); }
+
+        try
+        {
+            var options = new JsonSerializerOptions
+            {
+                WriteIndented = true, // szép (indentált) JSON
+                                      // PropertyNamingPolicy = JsonNamingPolicy.CamelCase, // ha camelCase kellene
+                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+            };
+
+            string json = JsonSerializer.Serialize(config, options);
+
+            // (Opcionális) atomi mentés: előbb temp fájlba, majd felülírás
+            string tmp = ConfigFilePath + ".tmp";
+            File.WriteAllText(tmp, json);
+            File.Copy(tmp, ConfigFilePath, overwrite: true);
+            File.Delete(tmp);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error saving config: {ex.Message}");
+        }
     }
 
     private void SaveHomes()

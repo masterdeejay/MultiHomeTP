@@ -49,9 +49,13 @@ public class TeleportMod : ModSystem
     private int maxHomes;                      // max létrehozható home (0 vagy kisebb = korlátlan)
 
     // Halálkezelés konfiguráció
-    private bool resetWalkOnDeath;             // halálkor walk reset?
+    private bool resetWalkOnDeath;             // halálkor teljes reset?
     private bool suppressRespawnTick;          // respawn utáni első mintavétel lenyelése?
     private HashSet<string> suppressNextWalkTick = new HashSet<string>();
+
+    // ÚJ: Halálkori veszteség és max limit
+    private double deathWalkLossPercent;       // 0..100, ha ResetWalkOnDeath=true => 100%
+    private double maxWalkCredit;              // <=0: végtelen (nincs limit)
 
     // Mintavétel/mentés intervallumok (ms)
     private int walkSampleIntervalMs;          // milyen sűrűn számolunk
@@ -505,6 +509,7 @@ public class TeleportMod : ModSystem
         LogAction($"{player.PlayerName} renamed home '{oldName}' to '{newName}'");
         return TextCommandResult.Success($"Home '{oldName}' renamed to '{newName}'.");
     }
+
     private TextCommandResult DeleteAllHomesCommand(TextCommandCallingArgs args)
     {
         var player = args.Caller.Player as IServerPlayer;
@@ -539,6 +544,8 @@ public class TeleportMod : ModSystem
                         $"- Back multiplier: {backTeleportMultiplier}, Back free: {backTeleportFree}\n" +
                         $"- Max homes: {maxHomes}\n" +
                         $"- ResetWalkOnDeath: {resetWalkOnDeath}, SuppressRespawnTick: {suppressRespawnTick}\n" +
+                        $"- DeathWalkLossPercent: {deathWalkLossPercent}%\n" +
+                        $"- MaxWalkCredit: {(maxWalkCredit > 0 ? maxWalkCredit.ToString() : "∞")}\n" +
                         $"- WalkSampleIntervalMs: {walkSampleIntervalMs}, WalkSaveIntervalMs: {walkSaveIntervalMs}";
         return TextCommandResult.Success($"{status}\nYour walk credit: {Math.Floor(have)} blocks");
     }
@@ -558,6 +565,7 @@ public class TeleportMod : ModSystem
         List<string> lines = new List<string>();
         lines.Add($"Teleport cost: {(teleportCostEnabled ? "ENABLED" : "DISABLED")}");
         lines.Add($"Global multiplier: {teleportCostMultiplier}");
+        lines.Add($"MaxWalkCredit: {(maxWalkCredit > 0 ? maxWalkCredit.ToString() : "∞")}");
         lines.Add("Home costs from your current position:");
         foreach (var kv in homes)
         {
@@ -615,7 +623,7 @@ public class TeleportMod : ModSystem
                 if (moved > 0)
                 {
                     if (!walkedProgress.ContainsKey(uid)) walkedProgress[uid] = 0;
-                    walkedProgress[uid] += moved;
+                    walkedProgress[uid] = ClampToMax(walkedProgress[uid] + moved);
                 }
                 lastKnownPos[uid] = curPos;
             }
@@ -649,17 +657,34 @@ public class TeleportMod : ModSystem
                 if (suppressRespawnTick)
                     suppressNextWalkTick.Add(uid);
 
-                // Kredit reset csak, ha engedélyezve
-                if (resetWalkOnDeath)
+                // Kredit reset/veszteség
+                // Ha ResetWalkOnDeath = true -> 100% veszteség (backward compatible).
+                // Ha ResetWalkOnDeath = false -> DeathWalkLossPercent szerinti veszteség (0..100).
+                double lossPercent = resetWalkOnDeath ? 100.0 : Math.Max(0, Math.Min(100, deathWalkLossPercent));
+
+                double oldVal = walkedProgress.ContainsKey(uid) ? walkedProgress[uid] : 0;
+                double newVal;
+
+                if (lossPercent >= 100.0)
                 {
-                    walkedProgress[uid] = 0;
-                    SaveWalkProgress();
-                    LogAction($"{sp.PlayerName} died - walk credit reset to 0");
+                    newVal = 0;
+                }
+                else if (lossPercent <= 0.0)
+                {
+                    newVal = oldVal; // nincs veszteség
                 }
                 else
                 {
-                    LogAction($"{sp.PlayerName} died - walk credit NOT reset (config)");
+                    double keepFactor = 1.0 - (lossPercent / 100.0);
+                    newVal = oldVal * keepFactor;
                 }
+
+                // Clamp maxra és 0-ra
+                newVal = ClampToMax(Math.Max(0, newVal));
+                walkedProgress[uid] = newVal;
+                SaveWalkProgress();
+
+                LogAction($"{sp.PlayerName} died - walk credit changed from {Math.Floor(oldVal)} to {Math.Floor(newVal)} (lossPercent={lossPercent}%)");
             }
         }
         catch (Exception ex)
@@ -708,6 +733,14 @@ public class TeleportMod : ModSystem
                 walkSampleIntervalMs = config?.WalkSampleIntervalMs ?? 1000;
                 walkSaveIntervalMs = config?.WalkSaveIntervalMs ?? 30000;
 
+                // ÚJ mezők
+                deathWalkLossPercent = config?.DeathWalkLossPercent ?? 0; // 0..100
+                maxWalkCredit = config?.MaxWalkCredit ?? 0; // <=0: végtelen
+
+                // Normalizálás
+                if (deathWalkLossPercent < 0) deathWalkLossPercent = 0;
+                if (deathWalkLossPercent > 100) deathWalkLossPercent = 100;
+
                 return;
             }
         }
@@ -743,6 +776,10 @@ public class TeleportMod : ModSystem
         walkSampleIntervalMs = 1000;
         walkSaveIntervalMs = 30000;
 
+        // ÚJ alapértelmezések
+        deathWalkLossPercent = 0;
+        maxWalkCredit = 0;
+
         SaveConfig();
     }
 
@@ -777,15 +814,18 @@ public class TeleportMod : ModSystem
             SuppressRespawnTick = suppressRespawnTick,
 
             WalkSampleIntervalMs = walkSampleIntervalMs,
-            WalkSaveIntervalMs = walkSaveIntervalMs
+            WalkSaveIntervalMs = walkSaveIntervalMs,
+
+            // ÚJ mezők mentése
+            DeathWalkLossPercent = deathWalkLossPercent,
+            MaxWalkCredit = maxWalkCredit
         };
 
         try
         {
             var options = new JsonSerializerOptions
             {
-                WriteIndented = true, // szép (indentált) JSON
-                                      // PropertyNamingPolicy = JsonNamingPolicy.CamelCase, // ha camelCase kellene
+                WriteIndented = true,
                 DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
             };
 
@@ -864,6 +904,13 @@ public class TeleportMod : ModSystem
                 walkedProgress = JsonUtil.FromBytes<Dictionary<string, double>>(File.ReadAllBytes(WalkProgressFilePath))
                                   ?? new Dictionary<string, double>();
             }
+
+            // Clamp minden játékosra (ha közben változott a max a configban)
+            if (walkedProgress != null && maxWalkCredit > 0)
+            {
+                var keys = new List<string>(walkedProgress.Keys);
+                foreach (var k in keys) walkedProgress[k] = ClampToMax(Math.Max(0, walkedProgress[k]));
+            }
         }
         catch (Exception ex)
         {
@@ -876,6 +923,13 @@ public class TeleportMod : ModSystem
     {
         try
         {
+            // Mentés előtt is biztos, ami biztos clamp
+            if (walkedProgress != null && maxWalkCredit > 0)
+            {
+                var keys = new List<string>(walkedProgress.Keys);
+                foreach (var k in keys) walkedProgress[k] = ClampToMax(Math.Max(0, walkedProgress[k]));
+            }
+
             File.WriteAllBytes(WalkProgressFilePath, JsonUtil.ToBytes(walkedProgress));
         }
         catch (Exception ex)
@@ -897,6 +951,13 @@ public class TeleportMod : ModSystem
         double dy = to.Y - from.Y;
         double dz = to.Z - from.Z;
         return (int)Math.Round(Math.Sqrt(dx * dx + dy * dy + dz * dz));
+    }
+
+    // ===== ÚJ: max clamp segédfüggvény =====
+    private double ClampToMax(double value)
+    {
+        if (maxWalkCredit > 0) return Math.Min(value, maxWalkCredit);
+        return value;
     }
 }
 
@@ -934,9 +995,15 @@ public class TeleportConfig
 
     // Halálkezelés
     public bool ResetWalkOnDeath { get; set; } = true;
+
+    public double DeathWalkLossPercent { get; set; } = 0; 
     public bool SuppressRespawnTick { get; set; } = true;
 
-    // Mintavétel és mentés intervallumok (ms)
+   
     public int WalkSampleIntervalMs { get; set; } = 1000;
     public int WalkSaveIntervalMs { get; set; } = 30000;
+
+    
+  
+    public double MaxWalkCredit { get; set; } = 0;        // <=0: végtelen
 }

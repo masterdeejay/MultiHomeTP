@@ -1,6 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net7.0</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
     <OutputType>Library</OutputType>
     <AssemblyTitle>multihometp</AssemblyTitle>
     <Product>simplehometp</Product>
@@ -14,7 +14,7 @@
   </ItemGroup>
   <ItemGroup>
     <Reference Include="VintagestoryAPI">
-      <HintPath>bin\Debug\netstandard2.0\VintagestoryAPI.dll</HintPath>
+      <HintPath>..\..\..\..\..\..\..\Games\Vintagestory\VintagestoryAPI.dll</HintPath>
     </Reference>
   </ItemGroup>
 </Project>

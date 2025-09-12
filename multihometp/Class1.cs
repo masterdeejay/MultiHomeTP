@@ -45,6 +45,21 @@ public class TeleportMod : ModSystem
 
     private bool spawnTeleportFree;            // spawn teleport ingyenes?
     private double spawnTeleportMultiplier;    // spawn teleport szorzó
+    
+    // --- TP2P beállítások és állapot ---
+    private bool tp2pEnabled;                 // /tp2p parancs engedélyezése
+    private bool tp2pFree;                    // TP2P ingyenes?
+    private double tp2pTeleportMultiplier;    // TP2P szorzó (globálissal együtt)
+    private Dictionary<string, PendingTp2p> pendingTp2p = new Dictionary<string, PendingTp2p>(); // kulcs: targetUid
+    private double tp2pRequestTimeoutSeconds = 60; // kérelmek lejárati ideje másodpercben
+
+    private class PendingTp2p
+    {
+        public string RequesterUid;
+        public string RequesterName;
+        public DateTime CreatedUtc;
+    }
+    
 
     private int maxHomes;                      // max létrehozható home (0 vagy kisebb = korlátlan)
 
@@ -195,6 +210,39 @@ public class TeleportMod : ModSystem
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .HandleWith(TpToSpawnCommand);
+        
+        // --- TP2P commands ---
+        if (tp2pEnabled)
+        {
+            commands.Create("tp2p")
+                .WithDescription("Send a teleport request to a player. Usage: /tp2p <player>")
+                .RequiresPrivilege(Privilege.chat)
+                .RequiresPlayer()
+                .WithArgs(parsers.Word("player"))
+                .HandleWith(Tp2pRequestCommand);
+
+            commands.Create("tpaccept")
+                .WithDescription("Accept a TP2P request. Usage: /tpaccept <player>")
+                .RequiresPrivilege(Privilege.chat)
+                .RequiresPlayer()
+                .WithArgs(parsers.Word("player"))
+                .HandleWith(Tp2pAcceptCommand);
+
+            commands.Create("tpdeny")
+                .WithDescription("Deny a TP2P request. Usage: /tpdeny <player>")
+                .RequiresPrivilege(Privilege.chat)
+                .RequiresPlayer()
+                .WithArgs(parsers.Word("player"))
+                .HandleWith(Tp2pDenyCommand);
+
+            commands.Create("tp2pcost")
+                .WithDescription("Show TP2P cost to a player or all online players. Usage: /tp2pcost [player]")
+                .RequiresPrivilege(Privilege.chat)
+                .RequiresPlayer()
+                .WithArgs(parsers.OptionalWord("player"))
+                .HandleWith(Tp2pCostCommand);
+        }
+        
         }
     }
 
@@ -542,6 +590,7 @@ public class TeleportMod : ModSystem
                         $"- Home multiplier: {homeTeleportMultiplier}, Default home multiplier: {defaultHomeMultiplier}, Default free: {defaultHomeFree}\n" +
                         $"- Spawn multiplier: {spawnTeleportMultiplier}, Spawn free: {spawnTeleportFree}\n" +
                         $"- Back multiplier: {backTeleportMultiplier}, Back free: {backTeleportFree}\n" +
+                        $"- TP2P: {(tp2pEnabled ? "ENABLED" : "DISABLED")}, TP2P multiplier: {tp2pTeleportMultiplier}, TP2P free: {tp2pFree}\n" +
                         $"- Max homes: {maxHomes}\n" +
                         $"- ResetWalkOnDeath: {resetWalkOnDeath}, SuppressRespawnTick: {suppressRespawnTick}\n" +
                         $"- DeathWalkLossPercent: {deathWalkLossPercent}%\n" +
@@ -591,7 +640,192 @@ public class TeleportMod : ModSystem
         return TextCommandResult.Success(string.Join("\n", lines));
     }
 
-    // ===== Walk progress kezelés =====
+    
+    // ===== TP2P segédfüggvények és handlerek =====
+
+    private IServerPlayer ResolveOnlinePlayerByNameOrPrefix(string name, out string err)
+    {
+        err = null;
+        if (sapi?.World?.AllOnlinePlayers == null) { err = "No online players."; return null; }
+        IServerPlayer exact = null;
+        IServerPlayer prefix = null;
+        int prefixCount = 0;
+        foreach (IServerPlayer sp in sapi.World.AllOnlinePlayers)
+        {
+            if (sp.PlayerName.Equals(name, StringComparison.OrdinalIgnoreCase)) { exact = sp; break; }
+            if (sp.PlayerName.StartsWith(name, StringComparison.OrdinalIgnoreCase)) { prefix = sp; prefixCount++; }
+        }
+        if (exact != null) return exact;
+        if (prefixCount == 1 && prefix != null) return prefix;
+        if (prefixCount > 1) { err = "Name is ambiguous, please type more letters."; return null; }
+        err = "Player not found.";
+        return null;
+    }
+
+    private void PruneExpiredTp2p()
+    {
+        if (pendingTp2p == null || pendingTp2p.Count == 0) return;
+        List<string> remove = new List<string>();
+        DateTime now = DateTime.UtcNow;
+        foreach (var kv in pendingTp2p)
+        {
+            if ((now - kv.Value.CreatedUtc).TotalSeconds > tp2pRequestTimeoutSeconds) remove.Add(kv.Key);
+        }
+        foreach (var k in remove) pendingTp2p.Remove(k);
+    }
+
+    private TextCommandResult Tp2pRequestCommand(TextCommandCallingArgs args)
+    {
+        var caller = args.Caller.Player as IServerPlayer;
+        if (caller == null) return TextCommandResult.Error("This command can only be used by a player.");
+        if (!tp2pEnabled) return TextCommandResult.Error("TP2P is disabled.");
+        string pname = args[0] as string;
+        if (string.IsNullOrWhiteSpace(pname)) return TextCommandResult.Error("Usage: /tp2p <player>");
+        if (pname.Equals(caller.PlayerName, StringComparison.OrdinalIgnoreCase)) return TextCommandResult.Error("You cannot send a request to yourself.");
+        PruneExpiredTp2p();
+
+        string err;
+        var target = ResolveOnlinePlayerByNameOrPrefix(pname, out err);
+        if (target == null) return TextCommandResult.Error(err);
+        var targetUid = target.PlayerUID;
+
+        pendingTp2p[targetUid] = new PendingTp2p { RequesterUid = caller.PlayerUID, RequesterName = caller.PlayerName, CreatedUtc = DateTime.UtcNow };
+
+        target.SendMessage(GlobalConstants.GeneralChatGroup, $"{caller.PlayerName} wants to teleport to you. Type /tpaccept {caller.PlayerName} to accept or /tpdeny {caller.PlayerName} to deny. Expires in {tp2pRequestTimeoutSeconds}s.", EnumChatType.CommandSuccess);
+        caller.SendMessage(GlobalConstants.GeneralChatGroup, $"Teleport request sent to {target.PlayerName}.", EnumChatType.CommandSuccess);
+        LogAction($"{caller.PlayerName} sent TP2P request to {target.PlayerName}");
+        return TextCommandResult.Success();
+    }
+
+    private TextCommandResult Tp2pAcceptCommand(TextCommandCallingArgs args)
+    {
+        var target = args.Caller.Player as IServerPlayer; // the receiver of the request
+        if (target == null) return TextCommandResult.Error("This command can only be used by a player.");
+        if (!tp2pEnabled) return TextCommandResult.Error("TP2P is disabled.");
+        string rname = args[0] as string;
+        if (string.IsNullOrWhiteSpace(rname)) return TextCommandResult.Error("Usage: /tpaccept <player>");
+        PruneExpiredTp2p();
+
+        string err;
+        var requester = ResolveOnlinePlayerByNameOrPrefix(rname, out err);
+        if (requester == null) return TextCommandResult.Error(err);
+
+        PendingTp2p pend;
+        if (!pendingTp2p.TryGetValue(target.PlayerUID, out pend) || pend.RequesterUid != requester.PlayerUID)
+            return TextCommandResult.Error("No pending request from that player or it has expired.");
+
+        if ((DateTime.UtcNow - pend.CreatedUtc).TotalSeconds > tp2pRequestTimeoutSeconds)
+        {
+            pendingTp2p.Remove(target.PlayerUID);
+            return TextCommandResult.Error("Request expired.");
+        }
+
+        // Cost & credit
+        Vec3d fromPos = requester.Entity.Pos.XYZ;
+        Vec3d toPos = target.Entity.Pos.XYZ;
+        int distBlocks = CalcBlockDistance(fromPos, toPos);
+
+        var uid = requester.PlayerUID;
+        double charged = 0;
+        bool chargeThis = teleportCostEnabled && !tp2pFree;
+        if (chargeThis)
+        {
+            double needed = distBlocks * teleportCostMultiplier * tp2pTeleportMultiplier;
+            double have = walkedProgress.ContainsKey(uid) ? walkedProgress[uid] : 0;
+            if (have < needed)
+            {
+                requester.SendMessage(GlobalConstants.GeneralChatGroup, $"Not enough walk credit for TP2P: need {Math.Ceiling(needed)}, you have {Math.Floor(have)}.", EnumChatType.CommandError);
+                target.SendMessage(GlobalConstants.GeneralChatGroup, $"{requester.PlayerName} does not have enough walk credit to teleport.", EnumChatType.CommandError);
+                return TextCommandResult.Error("Not enough credit.");
+            }
+            walkedProgress[uid] = have - needed;
+            charged = needed;
+            SaveWalkProgress();
+        }
+
+        previousPositions[uid] = fromPos;
+        SavePreviousPositions();
+        lastKnownPos[uid] = toPos;
+
+        requester.Entity.TeleportToDouble(toPos.X, toPos.Y, toPos.Z);
+
+        LogAction($"{requester.PlayerName} TP2P to {target.PlayerName} (~{distBlocks} blocks, charge={Math.Round(charged)})");
+        requester.SendMessage(GlobalConstants.GeneralChatGroup,
+            chargeThis ? $"Teleported to {target.PlayerName} (~{distBlocks} blocks). Cost: {Math.Ceiling(charged)}. Remaining credit: {Math.Floor(walkedProgress[uid])}."
+                       : $"Teleported to {target.PlayerName} (~{distBlocks} blocks).",
+            EnumChatType.CommandSuccess);
+        target.SendMessage(GlobalConstants.GeneralChatGroup, $"{requester.PlayerName} teleported to you.", EnumChatType.CommandSuccess);
+
+        pendingTp2p.Remove(target.PlayerUID);
+        return TextCommandResult.Success();
+    }
+
+    private TextCommandResult Tp2pDenyCommand(TextCommandCallingArgs args)
+    {
+        var target = args.Caller.Player as IServerPlayer;
+        if (target == null) return TextCommandResult.Error("This command can only be used by a player.");
+        if (!tp2pEnabled) return TextCommandResult.Error("TP2P is disabled.");
+        string rname = args[0] as string;
+        if (string.IsNullOrWhiteSpace(rname)) return TextCommandResult.Error("Usage: /tpdeny <player>");
+        PruneExpiredTp2p();
+
+        string err;
+        var requester = ResolveOnlinePlayerByNameOrPrefix(rname, out err);
+        if (requester == null) return TextCommandResult.Error(err);
+
+        PendingTp2p pend;
+        if (!pendingTp2p.TryGetValue(target.PlayerUID, out pend) || pend.RequesterUid != requester.PlayerUID)
+            return TextCommandResult.Error("No pending request from that player or it has expired.");
+
+        pendingTp2p.Remove(target.PlayerUID);
+        requester.SendMessage(GlobalConstants.GeneralChatGroup, $"{target.PlayerName} denied your teleport request.", EnumChatType.CommandError);
+        target.SendMessage(GlobalConstants.GeneralChatGroup, $"You denied {requester.PlayerName}'s teleport request.", EnumChatType.CommandSuccess);
+        LogAction($"{target.PlayerName} denied TP2P from {requester.PlayerName}");
+        return TextCommandResult.Success();
+    }
+
+    private TextCommandResult Tp2pCostCommand(TextCommandCallingArgs args)
+    {
+        var player = args.Caller.Player as IServerPlayer;
+        if (player == null) return TextCommandResult.Error("This command can only be used by a player.");
+        if (!tp2pEnabled) return TextCommandResult.Error("TP2P is disabled.");
+
+        string opt = args.Count > 0 ? args[0] as string : null;
+        Vec3d from = player.Entity.Pos.XYZ;
+        double have = walkedProgress.ContainsKey(player.PlayerUID) ? walkedProgress[player.PlayerUID] : 0;
+        bool chargeThis = teleportCostEnabled && !tp2pFree;
+
+        if (!string.IsNullOrWhiteSpace(opt))
+        {
+            string err;
+            var target = ResolveOnlinePlayerByNameOrPrefix(opt, out err);
+            if (target == null) return TextCommandResult.Error(err);
+            Vec3d to = target.Entity.Pos.XYZ;
+            int dist = CalcBlockDistance(from, to);
+            double cost = chargeThis ? dist * teleportCostMultiplier * tp2pTeleportMultiplier : 0;
+            bool enough = have >= cost;
+            return TextCommandResult.Success($"To {target.PlayerName}: distance ~{dist} blocks, cost {Math.Ceiling(cost)} (you have {Math.Floor(have)}) {(enough ? "" : "[NOT ENOUGH]")}");
+        }
+        else
+        {
+            var online = sapi?.World?.AllOnlinePlayers;
+            if (online == null) return TextCommandResult.Success("No other online players.");
+            List<string> lines = new List<string>();
+            lines.Add($"TP2P cost: {(teleportCostEnabled ? "ENABLED" : "DISABLED")}, TP2P free: {tp2pFree}, TP2P multiplier: {tp2pTeleportMultiplier}");
+            foreach (IServerPlayer sp in online)
+            {
+                if (sp.PlayerUID == player.PlayerUID) continue;
+                Vec3d to = sp.Entity.Pos.XYZ;
+                int dist = CalcBlockDistance(from, to);
+                double cost = chargeThis ? dist * teleportCostMultiplier * tp2pTeleportMultiplier : 0;
+                bool enough = have >= cost;
+                lines.Add($"- {sp.PlayerName}: ~{dist} blocks, cost {Math.Ceiling(cost)} (you have {Math.Floor(have)}) {(enough ? "" : "[NOT ENOUGH]")}");
+                if (lines.Count >= 12) break; // chatbarát limit
+            }
+            return TextCommandResult.Success(string.Join("\n", lines));
+        }
+    }
+// ===== Walk progress kezelés =====
 
     private void UpdateWalkProgressTick(float dt)
     {
@@ -724,6 +958,13 @@ public class TeleportMod : ModSystem
 
                 spawnTeleportFree = config?.SpawnTeleportFree ?? false;
                 spawnTeleportMultiplier = config?.SpawnTeleportMultiplier ?? 1.0;
+                
+                // TP2P
+                tp2pEnabled = config?.EnableTP2P ?? true;
+                tp2pFree = config?.TP2PTeleportFree ?? false;
+                tp2pTeleportMultiplier = config?.TP2PTeleportMultiplier ?? 1.0;
+                tp2pRequestTimeoutSeconds = config?.TP2PRequestTimeoutSeconds ?? 60;
+    
 
                 maxHomes = config?.MaxHomes ?? 0; // 0 vagy kisebb = korlátlan
 
@@ -796,6 +1037,12 @@ public class TeleportMod : ModSystem
 
             TeleportCostEnabled = teleportCostEnabled,
             TeleportCostMultiplier = teleportCostMultiplier,
+
+            // TP2P
+            EnableTP2P = tp2pEnabled,
+            TP2PTeleportFree = tp2pFree,
+            TP2PTeleportMultiplier = tp2pTeleportMultiplier,
+            TP2PRequestTimeoutSeconds = tp2pRequestTimeoutSeconds,
 
             BackTeleportFree = backTeleportFree,
             BackTeleportMultiplier = backTeleportMultiplier,
@@ -974,6 +1221,12 @@ public class TeleportConfig
     // Teleport-költség rendszer
     public bool TeleportCostEnabled { get; set; } = false;
     public double TeleportCostMultiplier { get; set; } = 1.0;
+
+    // TP2P (player-to-player) konfiguráció
+    public bool EnableTP2P { get; set; } = true;
+    public bool TP2PTeleportFree { get; set; } = false;
+    public double TP2PTeleportMultiplier { get; set; } = 1.0;
+    public double TP2PRequestTimeoutSeconds { get; set; } = 60;
 
     // /back
     public bool BackTeleportFree { get; set; } = true;

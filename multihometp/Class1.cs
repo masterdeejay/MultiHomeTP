@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
@@ -45,7 +45,7 @@ public class TeleportMod : ModSystem
 
     private bool spawnTeleportFree;            // spawn teleport ingyenes?
     private double spawnTeleportMultiplier;    // spawn teleport szorzó
-    
+
     // --- TP2P beállítások és állapot ---
     private bool tp2pEnabled;                 // /tp2p parancs engedélyezése
     private bool tp2pFree;                    // TP2P ingyenes?
@@ -59,7 +59,7 @@ public class TeleportMod : ModSystem
         public string RequesterName;
         public DateTime CreatedUtc;
     }
-    
+
 
     private int maxHomes;                      // max létrehozható home (0 vagy kisebb = korlátlan)
 
@@ -182,7 +182,7 @@ public class TeleportMod : ModSystem
             .HandleWith(WalkCreditCommand);
 
         commands.Create("listhomescost")
-            .WithDescription("Lists each home’s distance and teleport cost from your current position")
+            .WithDescription("Lists each home's distance and teleport cost from your current position")
             .RequiresPrivilege(Privilege.chat)
             .RequiresPlayer()
             .HandleWith(ListHomesCostCommand);
@@ -210,39 +210,39 @@ public class TeleportMod : ModSystem
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .HandleWith(TpToSpawnCommand);
-        
-        // --- TP2P commands ---
-        if (tp2pEnabled)
-        {
-            commands.Create("tp2p")
-                .WithDescription("Send a teleport request to a player. Usage: /tp2p <player>")
-                .RequiresPrivilege(Privilege.chat)
-                .RequiresPlayer()
-                .WithArgs(parsers.Word("player"))
-                .HandleWith(Tp2pRequestCommand);
 
-            commands.Create("tpaccept")
-                .WithDescription("Accept a TP2P request. Usage: /tpaccept <player>")
-                .RequiresPrivilege(Privilege.chat)
-                .RequiresPlayer()
-                .WithArgs(parsers.Word("player"))
-                .HandleWith(Tp2pAcceptCommand);
+            // --- TP2P commands ---
+            if (tp2pEnabled)
+            {
+                commands.Create("tp2p")
+                    .WithDescription("Send a teleport request to a player. Usage: /tp2p <player>")
+                    .RequiresPrivilege(Privilege.chat)
+                    .RequiresPlayer()
+                    .WithArgs(parsers.Word("player"))
+                    .HandleWith(Tp2pRequestCommand);
 
-            commands.Create("tpdeny")
-                .WithDescription("Deny a TP2P request. Usage: /tpdeny <player>")
-                .RequiresPrivilege(Privilege.chat)
-                .RequiresPlayer()
-                .WithArgs(parsers.Word("player"))
-                .HandleWith(Tp2pDenyCommand);
+                commands.Create("tpaccept")
+                    .WithDescription("Accept a TP2P request. Usage: /tpaccept <player>")
+                    .RequiresPrivilege(Privilege.chat)
+                    .RequiresPlayer()
+                    .WithArgs(parsers.Word("player"))
+                    .HandleWith(Tp2pAcceptCommand);
 
-            commands.Create("tp2pcost")
-                .WithDescription("Show TP2P cost to a player or all online players. Usage: /tp2pcost [player]")
-                .RequiresPrivilege(Privilege.chat)
-                .RequiresPlayer()
-                .WithArgs(parsers.OptionalWord("player"))
-                .HandleWith(Tp2pCostCommand);
-        }
-        
+                commands.Create("tpdeny")
+                    .WithDescription("Deny a TP2P request. Usage: /tpdeny <player>")
+                    .RequiresPrivilege(Privilege.chat)
+                    .RequiresPlayer()
+                    .WithArgs(parsers.Word("player"))
+                    .HandleWith(Tp2pDenyCommand);
+
+                commands.Create("tp2pcost")
+                    .WithDescription("Show TP2P cost to a player or all online players. Usage: /tp2pcost [player]")
+                    .RequiresPrivilege(Privilege.chat)
+                    .RequiresPlayer()
+                    .WithArgs(parsers.OptionalWord("player"))
+                    .HandleWith(Tp2pCostCommand);
+            }
+
         }
     }
 
@@ -640,7 +640,7 @@ public class TeleportMod : ModSystem
         return TextCommandResult.Success(string.Join("\n", lines));
     }
 
-    
+
     // ===== TP2P segédfüggvények és handlerek =====
 
     private IServerPlayer ResolveOnlinePlayerByNameOrPrefix(string name, out string err)
@@ -790,7 +790,7 @@ public class TeleportMod : ModSystem
         if (player == null) return TextCommandResult.Error("This command can only be used by a player.");
         if (!tp2pEnabled) return TextCommandResult.Error("TP2P is disabled.");
 
-        string opt = args.Count > 0 ? args[0] as string : null;
+        string opt = args.ArgCount >= 1 ? args[0] as string : null;
         Vec3d from = player.Entity.Pos.XYZ;
         double have = walkedProgress.ContainsKey(player.PlayerUID) ? walkedProgress[player.PlayerUID] : 0;
         bool chargeThis = teleportCostEnabled && !tp2pFree;
@@ -825,7 +825,7 @@ public class TeleportMod : ModSystem
             return TextCommandResult.Success(string.Join("\n", lines));
         }
     }
-// ===== Walk progress kezelés =====
+    // ===== Walk progress kezelés =====
 
     private void UpdateWalkProgressTick(float dt)
     {
@@ -958,13 +958,13 @@ public class TeleportMod : ModSystem
 
                 spawnTeleportFree = config?.SpawnTeleportFree ?? false;
                 spawnTeleportMultiplier = config?.SpawnTeleportMultiplier ?? 1.0;
-                
+
                 // TP2P
                 tp2pEnabled = config?.EnableTP2P ?? true;
                 tp2pFree = config?.TP2PTeleportFree ?? false;
                 tp2pTeleportMultiplier = config?.TP2PTeleportMultiplier ?? 1.0;
                 tp2pRequestTimeoutSeconds = config?.TP2PRequestTimeoutSeconds ?? 60;
-    
+
 
                 maxHomes = config?.MaxHomes ?? 0; // 0 vagy kisebb = korlátlan
 
@@ -1249,14 +1249,14 @@ public class TeleportConfig
     // Halálkezelés
     public bool ResetWalkOnDeath { get; set; } = true;
 
-    public double DeathWalkLossPercent { get; set; } = 0; 
+    public double DeathWalkLossPercent { get; set; } = 0;
     public bool SuppressRespawnTick { get; set; } = true;
 
-   
+
     public int WalkSampleIntervalMs { get; set; } = 1000;
     public int WalkSaveIntervalMs { get; set; } = 30000;
 
-    
-  
+
+
     public double MaxWalkCredit { get; set; } = 0;        // <=0: végtelen
 }

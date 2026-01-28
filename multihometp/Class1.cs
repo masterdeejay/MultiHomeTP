@@ -210,38 +210,38 @@ public class TeleportMod : ModSystem
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .HandleWith(TpToSpawnCommand);
+        }
 
-            // --- TP2P commands ---
-            if (tp2pEnabled)
-            {
-                commands.Create("tp2p")
-                    .WithDescription("Send a teleport request to a player. Usage: /tp2p <player>")
-                    .RequiresPrivilege(Privilege.chat)
-                    .RequiresPlayer()
-                    .WithArgs(parsers.Word("player"))
-                    .HandleWith(Tp2pRequestCommand);
+        // ----- TP2P parancsok (független a spawn parancsoktól) -----
+        if (tp2pEnabled)
+        {
+            commands.Create("tp2p")
+                .WithDescription("Send a teleport request to a player. Usage: /tp2p <player>")
+                .RequiresPrivilege(Privilege.chat)
+                .RequiresPlayer()
+                .WithArgs(parsers.Word("player"))
+                .HandleWith(Tp2pRequestCommand);
 
-                commands.Create("tpaccept")
-                    .WithDescription("Accept a TP2P request. Usage: /tpaccept <player>")
-                    .RequiresPrivilege(Privilege.chat)
-                    .RequiresPlayer()
-                    .WithArgs(parsers.Word("player"))
-                    .HandleWith(Tp2pAcceptCommand);
+            commands.Create("tpaccept")
+                .WithDescription("Accept a TP2P request. Usage: /tpaccept <player>")
+                .RequiresPrivilege(Privilege.chat)
+                .RequiresPlayer()
+                .WithArgs(parsers.Word("player"))
+                .HandleWith(Tp2pAcceptCommand);
 
-                commands.Create("tpdeny")
-                    .WithDescription("Deny a TP2P request. Usage: /tpdeny <player>")
-                    .RequiresPrivilege(Privilege.chat)
-                    .RequiresPlayer()
-                    .WithArgs(parsers.Word("player"))
-                    .HandleWith(Tp2pDenyCommand);
+            commands.Create("tpdeny")
+                .WithDescription("Deny a TP2P request. Usage: /tpdeny <player>")
+                .RequiresPrivilege(Privilege.chat)
+                .RequiresPlayer()
+                .WithArgs(parsers.Word("player"))
+                .HandleWith(Tp2pDenyCommand);
 
-                commands.Create("tp2pcost")
-                    .WithDescription("Show TP2P cost to a player or all online players. Usage: /tp2pcost [player]")
-                    .RequiresPrivilege(Privilege.chat)
-                    .RequiresPlayer()
-                    .WithArgs(parsers.OptionalWord("player"))
-                    .HandleWith(Tp2pCostCommand);
-            }
+            commands.Create("tp2pcost")
+                .WithDescription("Show TP2P cost to a player or all online players. Usage: /tp2pcost [player]")
+                .RequiresPrivilege(Privilege.chat)
+                .RequiresPlayer()
+                .WithArgs(parsers.OptionalWord("player"))
+                .HandleWith(Tp2pCostCommand);
 
         }
     }
@@ -721,6 +721,11 @@ public class TeleportMod : ModSystem
         }
 
         // Cost & credit
+        if (requester.Entity?.Pos == null || target.Entity?.Pos == null)
+        {
+            pendingTp2p.Remove(target.PlayerUID);
+            return TextCommandResult.Error("Teleport failed: player entity not ready, try again.");
+        }
         Vec3d fromPos = requester.Entity.Pos.XYZ;
         Vec3d toPos = target.Entity.Pos.XYZ;
         int distBlocks = CalcBlockDistance(fromPos, toPos);
@@ -734,9 +739,11 @@ public class TeleportMod : ModSystem
             double have = walkedProgress.ContainsKey(uid) ? walkedProgress[uid] : 0;
             if (have < needed)
             {
+                pendingTp2p.Remove(target.PlayerUID);
                 requester.SendMessage(GlobalConstants.GeneralChatGroup, $"Not enough walk credit for TP2P: need {Math.Ceiling(needed)}, you have {Math.Floor(have)}.", EnumChatType.CommandError);
                 target.SendMessage(GlobalConstants.GeneralChatGroup, $"{requester.PlayerName} does not have enough walk credit to teleport.", EnumChatType.CommandError);
                 return TextCommandResult.Error("Not enough credit.");
+               
             }
             walkedProgress[uid] = have - needed;
             charged = needed;
@@ -815,7 +822,9 @@ public class TeleportMod : ModSystem
             foreach (IServerPlayer sp in online)
             {
                 if (sp.PlayerUID == player.PlayerUID) continue;
+                if (sp.Entity?.Pos == null) continue;
                 Vec3d to = sp.Entity.Pos.XYZ;
+                
                 int dist = CalcBlockDistance(from, to);
                 double cost = chargeThis ? dist * teleportCostMultiplier * tp2pTeleportMultiplier : 0;
                 bool enough = have >= cost;
@@ -837,7 +846,8 @@ public class TeleportMod : ModSystem
             foreach (IServerPlayer sp in online)
             {
                 var uid = sp.PlayerUID;
-                var curPos = sp.Entity?.Pos?.XYZ ?? new Vec3d();
+                if (sp.Entity?.Pos == null) continue;
+                var curPos = sp.Entity.Pos.XYZ;
 
                 // Respawn utáni első tick: ne adjunk hozzá távot, csak igazítsuk a referenciát
                 if (suppressRespawnTick && suppressNextWalkTick.Contains(uid))
@@ -997,6 +1007,11 @@ public class TeleportMod : ModSystem
 
         teleportCostEnabled = false;
         teleportCostMultiplier = 1.0;
+
+        tp2pEnabled = true;
+        tp2pFree = false;
+        tp2pTeleportMultiplier = 1.0;
+        tp2pRequestTimeoutSeconds = 60;
 
         backTeleportFree = true;
         backTeleportMultiplier = 1.0;

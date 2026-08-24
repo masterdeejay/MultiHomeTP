@@ -8,6 +8,7 @@ using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Config;
 using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
+
 public class TeleportMod : ModSystem
 {
     private ICoreServerAPI sapi;
@@ -40,6 +41,7 @@ public class TeleportMod : ModSystem
     private bool backEnabled;
     private bool enableFarmCommands;
     private bool enableIndustryCommands;
+    private bool useMhtCommandPrefix; // false: /home, true: /mht home
 
     // Teleport cost settings (global + per-type)
     private bool teleportCostEnabled;          // master switch (applies to home/farm/industry unless per-type free)
@@ -97,6 +99,11 @@ public class TeleportMod : ModSystem
     private int walkSaveIntervalMs;
     private int _saveAccumMs = 0;
 
+    // ===== NEW: spawn-radius restrictions for set commands =====
+    private int setHomeRadiusFromSpawn;
+    private int setFarmRadiusFromSpawn;
+    private int setIndustryRadiusFromSpawn;
+
     private const string ConfigFileName = "MHT_config.json";
     private const string SaveFileName = "MHT_playerHomes.json";
     private const string SaveFarmsFileName = "MHT_playerFarms.json";
@@ -144,42 +151,52 @@ public class TeleportMod : ModSystem
         var commands = api.ChatCommands;
         var parsers = commands.Parsers;
 
+        // Optional command namespace. When enabled, all commands are registered below /mht.
+        IChatCommand mhtRoot = null;
+        if (useMhtCommandPrefix)
+        {
+            mhtRoot = commands.Create("mht")
+                .WithDescription("MHT teleport commands")
+                .RequiresPrivilege(Privilege.chat)
+                .HandleWith(MhtRootCommand);
+        }
+
         // Homes
-        commands.Create("sethome")
-            .WithDescription("Sets a home location. Usage: /sethome [name]")
+        CreateMhtCommand(commands, mhtRoot, "sethome")
+            .WithDescription($"Sets a home location. Usage: {Cmd("sethome")} [name]")
             .RequiresPrivilege(Privilege.chat)
             .RequiresPlayer()
             .WithArgs(parsers.OptionalWord("name"))
             .HandleWith(SetHomeCommand);
 
-        commands.Create("home")
-            .WithDescription($"Teleports you to a home. Usage: /home [name] (Cooldown: {homeCooldownSeconds / 60} min)")
+        CreateMhtCommand(commands, mhtRoot, "home")
+            .WithDescription($"Teleports you to a home. Usage: {Cmd("home")} [name] (Cooldown: {homeCooldownSeconds / 60} min)")
             .RequiresPrivilege(Privilege.chat)
             .RequiresPlayer()
             .WithArgs(parsers.OptionalWord("name"))
             .HandleWith(HomeCommand);
 
-        commands.Create("listhomes")
+        CreateMhtCommand(commands, mhtRoot, "listhomes")
             .WithDescription("Lists your saved home names")
             .RequiresPrivilege(Privilege.chat)
             .RequiresPlayer()
             .HandleWith(ListHomesCommand);
 
-        commands.Create("delhome")
-            .WithDescription("Deletes a saved home. Usage: /delhome <name>")
+        CreateMhtCommand(commands, mhtRoot, "delhome")
+            .WithDescription($"Deletes a saved home. Usage: {Cmd("delhome")} <name>")
             .RequiresPrivilege(Privilege.chat)
             .RequiresPlayer()
             .WithArgs(parsers.Word("name"))
             .HandleWith(DeleteHomeCommand);
 
-        commands.Create("renamehome")
-            .WithDescription("Renames a saved home. Usage: /renamehome <oldName> <newName>")
+        CreateMhtCommand(commands, mhtRoot, "renamehome")
+            .WithDescription($"Renames a saved home. Usage: {Cmd("renamehome")} <oldName> <newName>")
             .RequiresPrivilege(Privilege.chat)
             .RequiresPlayer()
             .WithArgs(parsers.Word("oldName"), parsers.Word("newName"))
             .HandleWith(RenameHomeCommand);
 
-        commands.Create("delallhomes")
+        CreateMhtCommand(commands, mhtRoot, "delallhomes")
             .WithDescription("Deletes all saved homes")
             .RequiresPrivilege(Privilege.chat)
             .RequiresPlayer()
@@ -188,97 +205,99 @@ public class TeleportMod : ModSystem
         // Farms (guarded by enableFarmCommands)
         if (enableFarmCommands)
         {
-            commands.Create("setfarm")
-                .WithDescription("Sets a farm location. Usage: /setfarm [name]")
+            CreateMhtCommand(commands, mhtRoot, "setfarm")
+                .WithDescription($"Sets a farm location. Usage: {Cmd("setfarm")} [name]")
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .WithArgs(parsers.OptionalWord("name"))
                 .HandleWith(SetFarmCommand);
 
-            commands.Create("farm")
-                .WithDescription($"Teleports you to a farm. Usage: /farm [name] (Cooldown: {farmCooldownSeconds / 60} min)")
+            CreateMhtCommand(commands, mhtRoot, "farm")
+                .WithDescription($"Teleports you to a farm. Usage: {Cmd("farm")} [name] (Cooldown: {farmCooldownSeconds / 60} min)")
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .WithArgs(parsers.OptionalWord("name"))
                 .HandleWith(FarmCommand);
 
-            commands.Create("listfarm")
+            CreateMhtCommand(commands, mhtRoot, "listfarm")
                 .WithDescription("Lists your saved farm names")
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .HandleWith(ListFarmsCommand);
 
-            commands.Create("delfarm")
-                .WithDescription("Deletes a saved farm. Usage: /delfarm <name>")
+            CreateMhtCommand(commands, mhtRoot, "delfarm")
+                .WithDescription($"Deletes a saved farm. Usage: {Cmd("delfarm")} <name>")
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .WithArgs(parsers.Word("name"))
                 .HandleWith(DeleteFarmCommand);
 
-            commands.Create("renamefarm")
-                .WithDescription("Renames a saved farm. Usage: /renamefarm <oldName> <newName>")
+            CreateMhtCommand(commands, mhtRoot, "renamefarm")
+                .WithDescription($"Renames a saved farm. Usage: {Cmd("renamefarm")} <oldName> <newName>")
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .WithArgs(parsers.Word("oldName"), parsers.Word("newName"))
                 .HandleWith(RenameFarmCommand);
-            commands.Create("delallfarms")
-    .WithDescription("Deletes all saved farms")
-    .RequiresPrivilege(Privilege.chat)
-    .RequiresPlayer()
-    .HandleWith(DeleteAllFarmsCommand);
+
+            CreateMhtCommand(commands, mhtRoot, "delallfarms")
+                .WithDescription("Deletes all saved farms")
+                .RequiresPrivilege(Privilege.chat)
+                .RequiresPlayer()
+                .HandleWith(DeleteAllFarmsCommand);
         }
 
         // Industries (guarded by enableIndustryCommands)
         if (enableIndustryCommands)
         {
-            commands.Create("setindustry")
-                .WithDescription("Sets an industry location. Usage: /setindustry [name]")
+            CreateMhtCommand(commands, mhtRoot, "setindustry")
+                .WithDescription($"Sets an industry location. Usage: {Cmd("setindustry")} [name]")
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .WithArgs(parsers.OptionalWord("name"))
                 .HandleWith(SetIndustryCommand);
 
-            commands.Create("industry")
-                .WithDescription($"Teleports you to an industry. Usage: /industry [name] (Cooldown: {industryCooldownSeconds / 60} min)")
+            CreateMhtCommand(commands, mhtRoot, "industry")
+                .WithDescription($"Teleports you to an industry. Usage: {Cmd("industry")} [name] (Cooldown: {industryCooldownSeconds / 60} min)")
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .WithArgs(parsers.OptionalWord("name"))
                 .HandleWith(IndustryCommand);
 
-            commands.Create("listindustry")
+            CreateMhtCommand(commands, mhtRoot, "listindustry")
                 .WithDescription("Lists your saved industry names")
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .HandleWith(ListIndustriesCommand);
 
-            commands.Create("delindustry")
-                .WithDescription("Deletes a saved industry. Usage: /delindustry <name>")
+            CreateMhtCommand(commands, mhtRoot, "delindustry")
+                .WithDescription($"Deletes a saved industry. Usage: {Cmd("delindustry")} <name>")
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .WithArgs(parsers.Word("name"))
                 .HandleWith(DeleteIndustryCommand);
 
-            commands.Create("renameindustry")
-                .WithDescription("Renames a saved industry. Usage: /renameindustry <oldName> <newName>")
+            CreateMhtCommand(commands, mhtRoot, "renameindustry")
+                .WithDescription($"Renames a saved industry. Usage: {Cmd("renameindustry")} <oldName> <newName>")
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .WithArgs(parsers.Word("oldName"), parsers.Word("newName"))
                 .HandleWith(RenameIndustryCommand);
-            commands.Create("delallindustries")
-    .WithDescription("Deletes all saved industries")
-    .RequiresPrivilege(Privilege.chat)
-    .RequiresPlayer()
-    .HandleWith(DeleteAllIndustriesCommand);
+
+            CreateMhtCommand(commands, mhtRoot, "delallindustries")
+                .WithDescription("Deletes all saved industries")
+                .RequiresPrivilege(Privilege.chat)
+                .RequiresPlayer()
+                .HandleWith(DeleteAllIndustriesCommand);
         }
 
         // Walk credit + costs
-        commands.Create("walkcredit")
+        CreateMhtCommand(commands, mhtRoot, "walkcredit")
             .WithDescription("Shows your current non-teleport walk credit in blocks")
             .RequiresPrivilege(Privilege.chat)
             .RequiresPlayer()
             .HandleWith(WalkCreditCommand);
 
-        commands.Create("listhomescost")
+        CreateMhtCommand(commands, mhtRoot, "listhomescost")
             .WithDescription("Lists each home's distance and teleport cost from your current position")
             .RequiresPrivilege(Privilege.chat)
             .RequiresPlayer()
@@ -291,19 +310,19 @@ public class TeleportMod : ModSystem
                 ? $"Teleport to the world's default spawn point (Cooldown: {spawnCooldownSeconds / 60} min)"
                 : "Teleport to the world's default spawn point";
 
-            commands.Create("tospawn")
+            CreateMhtCommand(commands, mhtRoot, "tospawn")
                 .WithDescription(desc)
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .HandleWith(TpToSpawnCommand);
 
-            commands.Create("tpspawn")
+            CreateMhtCommand(commands, mhtRoot, "tpspawn")
                 .WithDescription(desc)
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .HandleWith(TpToSpawnCommand);
 
-            commands.Create("tptospawn")
+            CreateMhtCommand(commands, mhtRoot, "tptospawn")
                 .WithDescription(desc)
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
@@ -312,29 +331,29 @@ public class TeleportMod : ModSystem
 
         if (tp2pEnabled)
         {
-            commands.Create("tp2p")
-                .WithDescription("Send a teleport request to a player. Usage: /tp2p <player>")
+            CreateMhtCommand(commands, mhtRoot, "tp2p")
+                .WithDescription($"Send a teleport request to a player. Usage: {Cmd("tp2p")} <player>")
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .WithArgs(parsers.Word("player"))
                 .HandleWith(Tp2pRequestCommand);
 
-            commands.Create("tpaccept")
-                .WithDescription("Accept a TP2P request. Usage: /tpaccept <player>")
+            CreateMhtCommand(commands, mhtRoot, "tpaccept")
+                .WithDescription($"Accept a TP2P request. Usage: {Cmd("tpaccept")} <player>")
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .WithArgs(parsers.Word("player"))
                 .HandleWith(Tp2pAcceptCommand);
 
-            commands.Create("tpdeny")
-                .WithDescription("Deny a TP2P request. Usage: /tpdeny <player>")
+            CreateMhtCommand(commands, mhtRoot, "tpdeny")
+                .WithDescription($"Deny a TP2P request. Usage: {Cmd("tpdeny")} <player>")
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .WithArgs(parsers.Word("player"))
                 .HandleWith(Tp2pDenyCommand);
 
-            commands.Create("tp2pcost")
-                .WithDescription("Show TP2P cost to a player or all online players. Usage: /tp2pcost [player]")
+            CreateMhtCommand(commands, mhtRoot, "tp2pcost")
+                .WithDescription($"Show TP2P cost to a player or all online players. Usage: {Cmd("tp2pcost")} [player]")
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
                 .WithArgs(commands.Parsers.OptionalWord("player"))
@@ -343,7 +362,7 @@ public class TeleportMod : ModSystem
 
         if (backEnabled)
         {
-            commands.Create("back")
+            CreateMhtCommand(commands, mhtRoot, "back")
                 .WithDescription($"Teleports you to your last location (Cooldown: {backCooldownSeconds / 60} min)")
                 .RequiresPrivilege(Privilege.chat)
                 .RequiresPlayer()
@@ -352,6 +371,21 @@ public class TeleportMod : ModSystem
     }
 
     // ===== Helpers =====
+
+    private IChatCommand CreateMhtCommand(IChatCommandApi commands, IChatCommand mhtRoot, string name)
+    {
+        return useMhtCommandPrefix ? mhtRoot.BeginSubCommand(name) : commands.Create(name);
+    }
+
+    private string Cmd(string commandName)
+    {
+        return useMhtCommandPrefix ? $"/mht {commandName}" : $"/{commandName}";
+    }
+
+    private TextCommandResult MhtRootCommand(TextCommandCallingArgs args)
+    {
+        return TextCommandResult.Success("MHT commands are enabled under /mht. Use /help mht to list them.");
+    }
 
     private string FormatCooldownTime(double seconds)
     {
@@ -363,7 +397,7 @@ public class TeleportMod : ModSystem
     private TextCommandResult CooldownError(string commandName, double remainingSeconds)
     {
         string timeMessage = FormatCooldownTime(remainingSeconds);
-        return TextCommandResult.Error($"You must wait {timeMessage} before using /{commandName} again.");
+        return TextCommandResult.Error($"You must wait {timeMessage} before using {Cmd(commandName)} again.");
     }
 
     private bool TryChargeForTeleport(string uid, int distBlocks, double perTypeMultiplier, bool typeFree, out double charged, out string error)
@@ -393,6 +427,35 @@ public class TeleportMod : ModSystem
         player.Entity.TeleportTo(toPos);
     }
 
+    // ===== NEW: spawn-radius check for /sethome /setfarm /setindustry =====
+    // Spawn pozíció: api.World.DefaultSpawnPosition.AsBlockPos
+    private bool IsWithinSpawnRadius(Vec3d playerPos, int radius, out int dist, out string err)
+    {
+        dist = 0;
+        err = null;
+
+        if (radius <= 0) return true; // 0 = unlimited
+
+        var epos = sapi?.World?.DefaultSpawnPosition;
+        if (epos == null)
+        {
+            err = "World spawn is not available.";
+            return false;
+        }
+
+        BlockPos spawn = epos.AsBlockPos; // <-- requested form
+        Vec3d spawnPos = new Vec3d(spawn.X, spawn.Y, spawn.Z);
+
+        dist = CalcBlockDistance(spawnPos, playerPos);
+        if (dist > radius)
+        {
+            err = $"This command can only be used within {radius} blocks of spawn. You are about {dist} blocks away.";
+            return false;
+        }
+
+        return true;
+    }
+
     private TextCommandResult TpToSpawnCommand(TextCommandCallingArgs args)
     {
         var player = args.Caller.Player as IServerPlayer;
@@ -411,7 +474,7 @@ public class TeleportMod : ModSystem
 
         var epos = sapi?.World?.DefaultSpawnPosition;
         if (epos == null) return TextCommandResult.Error("World spawn is not available.");
-        BlockPos spawn = epos.AsBlockPos;
+        BlockPos spawn = epos.AsBlockPos; // <-- requested form
 
         Vec3d fromPos = player.Entity.Pos.XYZ;
         Vec3d toPos = new Vec3d(spawn.X, spawn.Y + 1, spawn.Z);
@@ -451,9 +514,13 @@ public class TeleportMod : ModSystem
         var player = args.Caller.Player as IServerPlayer;
         if (player == null) return TextCommandResult.Error("This command can only be used by a player.");
 
+        // Spawn radius restriction
+        if (!IsWithinSpawnRadius(player.Entity.Pos.XYZ, setHomeRadiusFromSpawn, out int _, out string radiusErr))
+            return TextCommandResult.Error(radiusErr);
+
         string homeName = GetNameArg(args, homeSingleMode);
         if (homeSingleMode && homeName != "default")
-            return TextCommandResult.Error("Single mode: only one home allowed. Use /sethome without a name.");
+            return TextCommandResult.Error($"Single mode: only one home allowed. Use {Cmd("sethome")} without a name.");
 
         if (!playerHomes.TryGetValue(player.PlayerUID, out var homes))
         {
@@ -465,7 +532,7 @@ public class TeleportMod : ModSystem
         {
             int effectiveMax = homeSingleMode ? Math.Min(1, Math.Max(0, maxHomes)) : maxHomes;
             if (effectiveMax > 0 && homes.Count >= effectiveMax)
-                return TextCommandResult.Error($"You reached the home limit ({effectiveMax}). Delete one with /delhome <name>.");
+                return TextCommandResult.Error($"You reached the home limit ({effectiveMax}). Delete one with {Cmd("delhome")} <name>.");
         }
 
         homes[homeName] = player.Entity.Pos.XYZ;
@@ -530,10 +597,15 @@ public class TeleportMod : ModSystem
     {
         var player = args.Caller.Player as IServerPlayer;
         if (player == null) return TextCommandResult.Error("This command can only be used by a player.");
+
+        // Spawn radius restriction
+        if (!IsWithinSpawnRadius(player.Entity.Pos.XYZ, setFarmRadiusFromSpawn, out int _, out string radiusErr))
+            return TextCommandResult.Error(radiusErr);
+
         bool effectiveFarmSingle = farmSingleMode || teleportSingleMode;
         string name = GetNameArg(args, effectiveFarmSingle);
         if (effectiveFarmSingle && name != "default")
-            return TextCommandResult.Error("Single mode: only one farm allowed. Use /setfarm without a name.");
+            return TextCommandResult.Error($"Single mode: only one farm allowed. Use {Cmd("setfarm")} without a name.");
 
         if (!playerFarms.TryGetValue(player.PlayerUID, out var farms))
         {
@@ -545,7 +617,7 @@ public class TeleportMod : ModSystem
         {
             int effectiveMax = effectiveFarmSingle ? Math.Min(1, Math.Max(0, maxFarms)) : maxFarms;
             if (effectiveMax > 0 && farms.Count >= effectiveMax)
-                return TextCommandResult.Error($"You reached the farm limit ({effectiveMax}). Delete one with /delfarm <name>.");
+                return TextCommandResult.Error($"You reached the farm limit ({effectiveMax}). Delete one with {Cmd("delfarm")} <name>.");
         }
 
         farms[name] = player.Entity.Pos.XYZ;
@@ -615,7 +687,7 @@ public class TeleportMod : ModSystem
         var player = args.Caller.Player as IServerPlayer;
         if (player == null) return TextCommandResult.Error("This command can only be used by a player.");
         string name = (args.ArgCount >= 1 && args[0] is string s) ? s : null;
-        if (string.IsNullOrEmpty(name)) return TextCommandResult.Error("Usage: /delfarm <name>");
+        if (string.IsNullOrEmpty(name)) return TextCommandResult.Error($"Usage: {Cmd("delfarm")} <name>");
         bool effectiveFarmSingle = farmSingleMode || teleportSingleMode;
         if (effectiveFarmSingle && name != "default")
             return TextCommandResult.Error("Single mode: only 'default' farm can be deleted.");
@@ -638,7 +710,7 @@ public class TeleportMod : ModSystem
         if (effectiveFarmSingle) return TextCommandResult.Error("Single mode: renaming is disabled for farms.");
 
         if (args.ArgCount < 2 || !(args[0] is string oldName) || !(args[1] is string newName))
-            return TextCommandResult.Error("Usage: /renamefarm <oldName> <newName>");
+            return TextCommandResult.Error($"Usage: {Cmd("renamefarm")} <oldName> <newName>");
         if (string.Equals(oldName, newName, StringComparison.Ordinal))
             return TextCommandResult.Error("Old and new names are the same.");
         if (!playerFarms.TryGetValue(player.PlayerUID, out var farms) || !farms.ContainsKey(oldName))
@@ -659,10 +731,15 @@ public class TeleportMod : ModSystem
     {
         var player = args.Caller.Player as IServerPlayer;
         if (player == null) return TextCommandResult.Error("This command can only be used by a player.");
+
+        // Spawn radius restriction
+        if (!IsWithinSpawnRadius(player.Entity.Pos.XYZ, setIndustryRadiusFromSpawn, out int _, out string radiusErr))
+            return TextCommandResult.Error(radiusErr);
+
         bool effectiveIndustrySingle = industrySingleMode || teleportSingleMode;
         string name = GetNameArg(args, effectiveIndustrySingle);
         if (effectiveIndustrySingle && name != "default")
-            return TextCommandResult.Error("Single mode: only one industry allowed. Use /setindustry without a name.");
+            return TextCommandResult.Error($"Single mode: only one industry allowed. Use {Cmd("setindustry")} without a name.");
 
         if (!playerIndustries.TryGetValue(player.PlayerUID, out var inds))
         {
@@ -674,7 +751,7 @@ public class TeleportMod : ModSystem
         {
             int effectiveMax = effectiveIndustrySingle ? Math.Min(1, Math.Max(0, maxIndustries)) : maxIndustries;
             if (effectiveMax > 0 && inds.Count >= effectiveMax)
-                return TextCommandResult.Error($"You reached the industry limit ({effectiveMax}). Delete one with /delindustry <name>.");
+                return TextCommandResult.Error($"You reached the industry limit ({effectiveMax}). Delete one with {Cmd("delindustry")} <name>.");
         }
 
         inds[name] = player.Entity.Pos.XYZ;
@@ -744,7 +821,7 @@ public class TeleportMod : ModSystem
         var player = args.Caller.Player as IServerPlayer;
         if (player == null) return TextCommandResult.Error("This command can only be used by a player.");
         string name = (args.ArgCount >= 1 && args[0] is string s) ? s : null;
-        if (string.IsNullOrEmpty(name)) return TextCommandResult.Error("Usage: /delindustry <name>");
+        if (string.IsNullOrEmpty(name)) return TextCommandResult.Error($"Usage: {Cmd("delindustry")} <name>");
         bool effectiveIndustrySingle = industrySingleMode || teleportSingleMode;
         if (effectiveIndustrySingle && name != "default")
             return TextCommandResult.Error("Single mode: only 'default' industry can be deleted.");
@@ -767,7 +844,7 @@ public class TeleportMod : ModSystem
         if (effectiveIndustrySingle) return TextCommandResult.Error("Single mode: renaming is disabled for industries.");
 
         if (args.ArgCount < 2 || !(args[0] is string oldName) || !(args[1] is string newName))
-            return TextCommandResult.Error("Usage: /renameindustry <oldName> <newName>");
+            return TextCommandResult.Error($"Usage: {Cmd("renameindustry")} <oldName> <newName>");
         if (string.Equals(oldName, newName, StringComparison.Ordinal))
             return TextCommandResult.Error("Old and new names are the same.");
         if (!playerIndustries.TryGetValue(player.PlayerUID, out var inds) || !inds.ContainsKey(oldName))
@@ -807,22 +884,17 @@ public class TeleportMod : ModSystem
         if (!previousPositions.TryGetValue(uid, out Vec3d previousPos))
         {
             // Attempt to reload from disk (in case it wasn't loaded or was changed on-disk)
-            try
-            {
-                LoadPreviousPositions();
-            }
-            catch { /* ignore; we'll handle absence below */ }
+            try { LoadPreviousPositions(); } catch { }
 
             if (!previousPositions.TryGetValue(uid, out previousPos))
             {
-                // Diagnostics: log keys present to help debugging (no sensitive data)
                 try
                 {
                     LogAction($"Back: no previous position for {player.PlayerName} ({uid}). Stored keys: {(previousPositions.Count > 0 ? string.Join(",", previousPositions.Keys) : "<none>")}");
                 }
-                catch { /* best-effort logging */ }
+                catch { }
 
-                return TextCommandResult.Error("No previous position found. Teleport commands store your previous location — use /home, /farm, /industry, /tospawn or /tp2p first.");
+                return TextCommandResult.Error($"No previous position found. Teleport commands store your previous location — use {Cmd("home")}, {Cmd("farm")}, {Cmd("industry")}, {Cmd("tospawn")} or {Cmd("tp2p")} first.");
             }
         }
 
@@ -843,7 +915,6 @@ public class TeleportMod : ModSystem
         lastBackUse[uid] = currentTime;
         lastKnownPos[uid] = toPos;
 
-        // Teleport (use TeleportToDouble to avoid interpolation issues on server)
         player.Entity.TeleportToDouble(toPos.X, toPos.Y, toPos.Z);
 
         // Remove previous position after using /back to avoid repeated identical backs
@@ -876,7 +947,7 @@ public class TeleportMod : ModSystem
         if (player == null) return TextCommandResult.Error("This command can only be used by a player.");
 
         string homeName = (args.ArgCount >= 1 && args[0] is string s) ? s : null;
-        if (string.IsNullOrEmpty(homeName)) return TextCommandResult.Error("Usage: /delhome <name>");
+        if (string.IsNullOrEmpty(homeName)) return TextCommandResult.Error($"Usage: {Cmd("delhome")} <name>");
         if (homeSingleMode && homeName != "default")
             return TextCommandResult.Error("Single mode: only 'default' home can be deleted.");
 
@@ -890,24 +961,6 @@ public class TeleportMod : ModSystem
         return TextCommandResult.Error($"No home found with the name '{homeName}'.");
     }
 
-    private TextCommandResult HomeInfoCommand(TextCommandCallingArgs args)
-    {
-        var player = args.Caller.Player as IServerPlayer;
-        if (player == null) return TextCommandResult.Error("This command can only be used by a player.");
-
-        if (playerHomes.TryGetValue(player.PlayerUID, out var homes) && homes.Count > 0)
-        {
-            List<string> lines = new List<string> { "Saved homes:" };
-            foreach (var kv in homes)
-            {
-                Vec3d pos = kv.Value;
-                lines.Add($"- {kv.Key}: X={Math.Round(pos.X)} Y={Math.Round(pos.Y)} Z={Math.Round(pos.Z)}");
-            }
-            return TextCommandResult.Success(string.Join("\n", lines));
-        }
-        return TextCommandResult.Success("You have no saved homes.");
-    }
-
     private TextCommandResult RenameHomeCommand(TextCommandCallingArgs args)
     {
         var player = args.Caller.Player as IServerPlayer;
@@ -915,7 +968,7 @@ public class TeleportMod : ModSystem
         if (homeSingleMode) return TextCommandResult.Error("Single mode: renaming is disabled.");
 
         if (args.ArgCount < 2 || !(args[0] is string oldName) || !(args[1] is string newName))
-            return TextCommandResult.Error("Usage: /renamehome <oldName> <newName>");
+            return TextCommandResult.Error($"Usage: {Cmd("renamehome")} <oldName> <newName>");
         if (string.Equals(oldName, newName, StringComparison.Ordinal))
             return TextCommandResult.Error("Old and new names are the same.");
         if (!playerHomes.TryGetValue(player.PlayerUID, out var homes) || !homes.ContainsKey(oldName))
@@ -948,6 +1001,7 @@ public class TeleportMod : ModSystem
 
         return TextCommandResult.Error("You have no saved homes to delete.");
     }
+
     private TextCommandResult DeleteAllFarmsCommand(TextCommandCallingArgs args)
     {
         var player = args.Caller.Player as IServerPlayer;
@@ -983,6 +1037,7 @@ public class TeleportMod : ModSystem
 
         return TextCommandResult.Error("You have no saved industries to delete.");
     }
+
     // Walk credit & costs
     private TextCommandResult WalkCreditCommand(TextCommandCallingArgs args)
     {
@@ -1004,7 +1059,10 @@ public class TeleportMod : ModSystem
                         $"- ResetWalkOnDeath: {resetWalkOnDeath}, SuppressRespawnTick: {suppressRespawnTick}\n" +
                         $"- DeathWalkLossPercent: {deathWalkLossPercent}%\n" +
                         $"- MaxWalkCredit: {(maxWalkCredit > 0 ? maxWalkCredit.ToString() : "∞")}\n" +
-                        $"- WalkSampleIntervalMs: {walkSampleIntervalMs}, WalkSaveIntervalMs: {walkSaveIntervalMs}";
+                        $"- WalkSampleIntervalMs: {walkSampleIntervalMs}, WalkSaveIntervalMs: {walkSaveIntervalMs}\n" +
+                        $"- SetHomeRadiusFromSpawn: {setHomeRadiusFromSpawn}\n" +
+                        $"- SetFarmRadiusFromSpawn: {setFarmRadiusFromSpawn}\n" +
+                        $"- SetIndustryRadiusFromSpawn: {setIndustryRadiusFromSpawn}";
         return TextCommandResult.Success($"{status}\nYour walk credit: {Math.Floor(have)} blocks");
     }
 
@@ -1087,7 +1145,7 @@ public class TeleportMod : ModSystem
         if (caller == null) return TextCommandResult.Error("This command can only be used by a player.");
         if (!tp2pEnabled) return TextCommandResult.Error("TP2P is disabled.");
         string pname = args[0] as string;
-        if (string.IsNullOrWhiteSpace(pname)) return TextCommandResult.Error("Usage: /tp2p <player>");
+        if (string.IsNullOrWhiteSpace(pname)) return TextCommandResult.Error($"Usage: {Cmd("tp2p")} <player>");
         if (pname.Equals(caller.PlayerName, StringComparison.OrdinalIgnoreCase)) return TextCommandResult.Error("You cannot send a request to yourself.");
         PruneExpiredTp2p();
 
@@ -1098,7 +1156,7 @@ public class TeleportMod : ModSystem
 
         pendingTp2p[targetUid] = new PendingTp2p { RequesterUid = caller.PlayerUID, RequesterName = caller.PlayerName, CreatedUtc = DateTime.UtcNow };
 
-        target.SendMessage(GlobalConstants.GeneralChatGroup, $"{caller.PlayerName} wants to teleport to you. Type /tpaccept {caller.PlayerName} to accept or /tpdeny {caller.PlayerName} to deny. Expires in {tp2pRequestTimeoutSeconds}s.", EnumChatType.CommandSuccess);
+        target.SendMessage(GlobalConstants.GeneralChatGroup, $"{caller.PlayerName} wants to teleport to you. Type {Cmd("tpaccept")} {caller.PlayerName} to accept or {Cmd("tpdeny")} {caller.PlayerName} to deny. Expires in {tp2pRequestTimeoutSeconds}s.", EnumChatType.CommandSuccess);
         caller.SendMessage(GlobalConstants.GeneralChatGroup, $"Teleport request sent to {target.PlayerName}.", EnumChatType.CommandSuccess);
         LogAction($"{caller.PlayerName} sent TP2P request to {target.PlayerName}");
         return TextCommandResult.Success();
@@ -1110,7 +1168,7 @@ public class TeleportMod : ModSystem
         if (target == null) return TextCommandResult.Error("This command can only be used by a player.");
         if (!tp2pEnabled) return TextCommandResult.Error("TP2P is disabled.");
         string rname = args[0] as string;
-        if (string.IsNullOrWhiteSpace(rname)) return TextCommandResult.Error("Usage: /tpaccept <player>");
+        if (string.IsNullOrWhiteSpace(rname)) return TextCommandResult.Error($"Usage: {Cmd("tpaccept")} <player>");
         PruneExpiredTp2p();
 
         string err;
@@ -1173,7 +1231,7 @@ public class TeleportMod : ModSystem
         if (target == null) return TextCommandResult.Error("This command can only be used by a player.");
         if (!tp2pEnabled) return TextCommandResult.Error("TP2P is disabled.");
         string rname = args[0] as string;
-        if (string.IsNullOrWhiteSpace(rname)) return TextCommandResult.Error("Usage: /tpdeny <player>");
+        if (string.IsNullOrWhiteSpace(rname)) return TextCommandResult.Error($"Usage: {Cmd("tpdeny")} <player>");
         PruneExpiredTp2p();
 
         string err;
@@ -1303,12 +1361,9 @@ public class TeleportMod : ModSystem
                 double oldVal = walkedProgress.ContainsKey(uid) ? walkedProgress[uid] : 0;
                 double newVal;
 
-                if (lossPercent >= 100.0)
-                    newVal = 0;
-                else if (lossPercent <= 0.0)
-                    newVal = oldVal;
-                else
-                    newVal = oldVal * (1.0 - (lossPercent / 100.0));
+                if (lossPercent >= 100.0) newVal = 0;
+                else if (lossPercent <= 0.0) newVal = oldVal;
+                else newVal = oldVal * (1.0 - (lossPercent / 100.0));
 
                 newVal = ClampToMax(Math.Max(0, newVal));
                 walkedProgress[uid] = newVal;
@@ -1331,6 +1386,7 @@ public class TeleportMod : ModSystem
             if (File.Exists(ConfigFilePath))
             {
                 string json = File.ReadAllText(ConfigFilePath);
+                bool configNeedsUpgrade = !json.Contains("\"UseMhtCommandPrefix\"");
                 var config = JsonUtil.FromString<TeleportConfig>(json);
 
                 // cooldowns
@@ -1353,6 +1409,7 @@ public class TeleportMod : ModSystem
                 backEnabled = config?.EnableBackCommand ?? true;
                 enableFarmCommands = config?.EnableFarmCommands ?? true;
                 enableIndustryCommands = config?.EnableIndustryCommands ?? true;
+                useMhtCommandPrefix = config?.UseMhtCommandPrefix ?? false;
 
                 // teleport cost global
                 teleportCostEnabled = config?.TeleportCostEnabled ?? false;
@@ -1373,13 +1430,11 @@ public class TeleportMod : ModSystem
                 spawnTeleportMultiplier = config?.SpawnTeleportMultiplier ?? 1.0;
 
                 // Farm
-                // farmSingleMode is already assigned above
                 farmTeleportFree = config?.FarmTeleportFree ?? false;
                 farmTeleportMultiplier = config?.FarmTeleportMultiplier ?? 1.0;
                 maxFarms = config?.MaxFarms ?? 0;
 
                 // Industry
-                // industrySingleMode assigned above
                 industryTeleportFree = config?.IndustryTeleportFree ?? false;
                 industryTeleportMultiplier = config?.IndustryTeleportMultiplier ?? 1.0;
                 maxIndustries = config?.MaxIndustries ?? 0;
@@ -1404,6 +1459,17 @@ public class TeleportMod : ModSystem
                 if (deathWalkLossPercent < 0) deathWalkLossPercent = 0;
                 if (deathWalkLossPercent > 100) deathWalkLossPercent = 100;
 
+                // ===== NEW: set-command spawn radius restrictions =====
+                setHomeRadiusFromSpawn = config?.SetHomeRadiusFromSpawn ?? 0;
+                setFarmRadiusFromSpawn = config?.SetFarmRadiusFromSpawn ?? 0;
+                setIndustryRadiusFromSpawn = config?.SetIndustryRadiusFromSpawn ?? 0;
+
+                if (setHomeRadiusFromSpawn < 0) setHomeRadiusFromSpawn = 0;
+                if (setFarmRadiusFromSpawn < 0) setFarmRadiusFromSpawn = 0;
+                if (setIndustryRadiusFromSpawn < 0) setIndustryRadiusFromSpawn = 0;
+
+                // Add newly introduced config fields to older config files automatically.
+                if (configNeedsUpgrade) SaveConfig();
                 return;
             }
         }
@@ -1425,6 +1491,7 @@ public class TeleportMod : ModSystem
         backEnabled = true;
         enableFarmCommands = true;
         enableIndustryCommands = true;
+        useMhtCommandPrefix = false;
 
         teleportCostEnabled = false;
         teleportCostMultiplier = 1.0;
@@ -1464,8 +1531,12 @@ public class TeleportMod : ModSystem
         deathWalkLossPercent = 0;
         maxWalkCredit = 0;
 
+        // ===== NEW defaults =====
+        setHomeRadiusFromSpawn = 0;
+        setFarmRadiusFromSpawn = 0;
+        setIndustryRadiusFromSpawn = 0;
+
         SaveConfig();
-        SaveConfigSample();
     }
 
     private void SaveConfig()
@@ -1486,6 +1557,7 @@ public class TeleportMod : ModSystem
             EnableBackCommand = backEnabled,
             EnableFarmCommands = enableFarmCommands,
             EnableIndustryCommands = enableIndustryCommands,
+            UseMhtCommandPrefix = useMhtCommandPrefix,
 
             TeleportCostEnabled = teleportCostEnabled,
             TeleportCostMultiplier = teleportCostMultiplier,
@@ -1529,7 +1601,12 @@ public class TeleportMod : ModSystem
             WalkSaveIntervalMs = walkSaveIntervalMs,
 
             DeathWalkLossPercent = deathWalkLossPercent,
-            MaxWalkCredit = maxWalkCredit
+            MaxWalkCredit = maxWalkCredit,
+
+            // ===== NEW =====
+            SetHomeRadiusFromSpawn = setHomeRadiusFromSpawn,
+            SetFarmRadiusFromSpawn = setFarmRadiusFromSpawn,
+            SetIndustryRadiusFromSpawn = setIndustryRadiusFromSpawn
         };
 
         try
@@ -1551,90 +1628,7 @@ public class TeleportMod : ModSystem
             Console.WriteLine($"Error saving config: {ex.Message}");
         }
     }
-    private void SaveConfigSample()
-    {
-        try
-        {
-            // Create a TeleportConfig populated with current/default values so the generated sample
-            // JSON is grouped and shows meaningful defaults.
-            var sample = new TeleportConfig
-            {
-                TeleportMode = teleportSingleMode ? "single" : "multi",
-                TeleportSingleMode = teleportSingleMode,
-                HomeSingleMode = homeSingleMode,
 
-                HomeCooldownSeconds = homeCooldownSeconds,
-                FarmCooldownSeconds = farmCooldownSeconds,
-                IndustryCooldownSeconds = industryCooldownSeconds,
-                BackCooldownSeconds = backCooldownSeconds,
-                SpawnCooldownSeconds = spawnCooldownSeconds,
-
-                EnableSpawnCommands = spawnCommandsEnabled,
-                EnableBackCommand = backEnabled,
-                EnableFarmCommands = enableFarmCommands,
-                EnableIndustryCommands = enableIndustryCommands,
-
-                TeleportCostEnabled = teleportCostEnabled,
-                TeleportCostMultiplier = teleportCostMultiplier,
-
-                FarmSingleMode = farmSingleMode,
-                FarmTeleportFree = farmTeleportFree,
-                FarmTeleportMultiplier = farmTeleportMultiplier,
-                MaxFarms = maxFarms,
-
-                IndustrySingleMode = industrySingleMode,
-                IndustryTeleportFree = industryTeleportFree,
-                IndustryTeleportMultiplier = industryTeleportMultiplier,
-                MaxIndustries = maxIndustries,
-
-                EnableTP2P = tp2pEnabled,
-                TP2PTeleportFree = tp2pFree,
-                TP2PTeleportMultiplier = tp2pTeleportMultiplier,
-                TP2PRequestTimeoutSeconds = tp2pRequestTimeoutSeconds,
-
-                BackTeleportFree = backTeleportFree,
-                BackTeleportMultiplier = backTeleportMultiplier,
-
-                DefaultHomeFree = defaultHomeFree,
-                HomeTeleportFree = homeTeleportFree,
-                DefaultHomeMultiplier = defaultHomeMultiplier,
-
-                HomeTeleportMultiplier = homeTeleportMultiplier,
-
-                SpawnTeleportFree = spawnTeleportFree,
-                SpawnTeleportMultiplier = spawnTeleportMultiplier,
-
-                MaxHomes = maxHomes,
-
-                ResetWalkOnDeath = resetWalkOnDeath,
-                SuppressRespawnTick = suppressRespawnTick,
-
-                WalkSampleIntervalMs = walkSampleIntervalMs,
-                WalkSaveIntervalMs = walkSaveIntervalMs,
-
-                DeathWalkLossPercent = deathWalkLossPercent,
-                MaxWalkCredit = maxWalkCredit
-            };
-
-            var options = new JsonSerializerOptions
-            {
-                WriteIndented = true,
-                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-            };
-
-            string json = JsonSerializer.Serialize(sample, options);
-
-            // Prepend a short explanatory header (stored in a separate example file next to the real config).
-            string header = "/* Example grouped config for MultiHomeTP - read-only example. */\n";
-
-            string examplePath = ConfigFilePath + ".example.json";
-            File.WriteAllText(examplePath, header + json);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error saving config sample: {ex.Message}");
-        }
-    }
     private void SaveHomes()
     {
         try { File.WriteAllBytes(SaveFilePath, JsonUtil.ToBytes(playerHomes)); }
@@ -1843,6 +1837,9 @@ public class TeleportConfig
     public bool EnableFarmCommands { get; set; } = true;
     public bool EnableIndustryCommands { get; set; } = true;
 
+    // false = /home, /back, ... ; true = /mht home, /mht back, ...
+    public bool UseMhtCommandPrefix { get; set; } = false;
+
     public bool TeleportCostEnabled { get; set; } = false;
     public double TeleportCostMultiplier { get; set; } = 1.0;
 
@@ -1886,4 +1883,9 @@ public class TeleportConfig
     public int WalkSaveIntervalMs { get; set; } = 30000;
 
     public double MaxWalkCredit { get; set; } = 0;
+
+    // ===== NEW: restrict where set commands can be used (0 = unlimited) =====
+    public int SetHomeRadiusFromSpawn { get; set; } = 0;
+    public int SetFarmRadiusFromSpawn { get; set; } = 0;
+    public int SetIndustryRadiusFromSpawn { get; set; } = 0;
 }
